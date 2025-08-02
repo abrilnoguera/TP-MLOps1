@@ -1,7 +1,24 @@
 import datetime
 import pandas as pd
+import yaml
+import os
 
 from airflow.decorators import dag, task
+
+def get_variables_from_yaml():
+    """
+    Helper function to read variables directly from YAML file
+    This avoids issues with Airflow LocalFilesystemBackend and list parsing
+    """
+    yaml_path = "/opt/secrets/variables.yaml"
+    if os.path.exists(yaml_path):
+        with open(yaml_path, 'r') as file:
+            return yaml.safe_load(file)
+    else:
+        # Fallback to local path for development
+        yaml_path = "./airflow/secrets/variables.yaml"
+        with open(yaml_path, 'r') as file:
+            return yaml.safe_load(file)
 
 markdown_text = """
 ### ETL Process for AirBnb Dataset
@@ -35,10 +52,8 @@ default_args = {
 )
 def process_etl_airbnb_data():
 
-    @task.virtualenv(
-        task_id="get_data",
-        requirements=["awswrangler==3.6.0"],
-        system_site_packages=True
+    @task(
+        task_id="get_data"
     )
     def get_data():
         """
@@ -64,10 +79,8 @@ def process_etl_airbnb_data():
                      index=False)
 
 
-    @task.virtualenv(
-        task_id="preprocess_data",
-        requirements=["awswrangler==3.6.0"],
-        system_site_packages=True
+    @task(
+        task_id="preprocess_data"
     )
     def preprocess_data():
         """
@@ -234,6 +247,9 @@ def process_etl_airbnb_data():
 
         # Eliminar columna que define al target
         df.drop(columns=["occupation_rate"], inplace=True)
+        
+        # Eliminar la columna amenities ya que contiene listas y no está en feature_cols
+        df.drop(columns=["amenities"], inplace=True, errors='ignore')
 
         wr.s3.to_csv(df=df,
                      path=data_end_path,
@@ -264,7 +280,16 @@ def process_etl_airbnb_data():
 
         category_dummies_dict = {}
         for category in data_dict['categorical_columns']:
-            category_dummies_dict[category] = np.sort(dataset_log[category].unique()).tolist()
+            # Skip columns that contain lists (like amenities)
+            if category in dataset_log.columns:
+                try:
+                    # Check if the column contains hashable values
+                    unique_values = dataset_log[category].unique()
+                    category_dummies_dict[category] = np.sort(unique_values).tolist()
+                except TypeError:
+                    # Skip columns with unhashable types (like lists)
+                    print(f"Skipping column '{category}' as it contains unhashable types (likely lists)")
+                    continue
 
         data_dict['categories_values_per_categorical'] = category_dummies_dict
 
@@ -287,7 +312,6 @@ def process_etl_airbnb_data():
 
         mlflow_dataset = mlflow.data.from_pandas(data,
                                                  source="https://data.insideairbnb.com/argentina/ciudad-aut%C3%B3noma-de-buenos-aires/buenos-aires/2025-01-29/data/listings.csv.gz",
-                                                 targets=target_col,
                                                  name="airbnb_data_complete")
         mlflow_dataset_dummies = mlflow.data.from_pandas(df,
                                                          source="https://data.insideairbnb.com/argentina/ciudad-aut%C3%B3noma-de-buenos-aires/buenos-aires/2025-01-29/data/listings.csv.gz",
@@ -296,17 +320,15 @@ def process_etl_airbnb_data():
         mlflow.log_input(mlflow_dataset, context="Dataset")
         mlflow.log_input(mlflow_dataset_dummies, context="Dataset")
 
-    @task.virtualenv(
-        task_id="split_dataset",
-        requirements=["awswrangler==3.6.0",
-                      "scikit-learn==1.3.2"],
-        system_site_packages=True
+    @task(
+        task_id="split_dataset"
     )
     def split_dataset():
         """
         Generate a dataset split into a training part and a test part
         """
         import awswrangler as wr
+        import json
         from sklearn.model_selection import train_test_split
         from airflow.models import Variable
 
@@ -318,9 +340,11 @@ def process_etl_airbnb_data():
         data_original_path = "s3://data/raw/airbnb_preprocessed.csv"
         dataset = wr.s3.read_csv(data_original_path)
 
-        test_size = Variable.get("test_size")
-        target_col = Variable.get("target_col")
-        feature_cols = Variable.get("feature_cols")
+        # Use our helper function to get variables from YAML
+        variables = get_variables_from_yaml()
+        test_size = variables["test_size"]
+        target_col = variables["target_col"]
+        feature_cols = variables["feature_cols"]
 
         X = dataset[feature_cols]
         y = dataset[[target_col]]
@@ -335,12 +359,8 @@ def process_etl_airbnb_data():
         save_to_csv(y_train, "s3://data/final/train/airbnb_y_train.csv")
         save_to_csv(y_test, "s3://data/final/test/airbnb_y_test.csv")
 
-    @task.virtualenv(
-        task_id="encode_normalize_features",
-        requirements=["awswrangler==3.6.0",
-                      "scikit-learn==1.3.2",
-                      "mlflow==2.10.2"],
-        system_site_packages=True
+    @task(
+        task_id="encode_normalize_features"
     )
     def encode_normalize_features():
         """
@@ -371,8 +391,9 @@ def process_etl_airbnb_data():
         X_train = wr.s3.read_csv("s3://data/final/train/airbnb_X_train.csv")
         X_test = wr.s3.read_csv("s3://data/final/test/airbnb_X_test.csv")
 
-        # Variables categóricas y numéricas
-        cat_cols = Variable.get("cat_cols")
+        # Use our helper function to get variables from YAML
+        variables = get_variables_from_yaml()
+        cat_cols = variables["cat_cols"]
         num_cols = [col for col in X_train.columns if col not in cat_cols]
 
         # Preprocesador
@@ -385,8 +406,13 @@ def process_etl_airbnb_data():
         X_train_arr = preprocessor.fit_transform(X_train)
         X_test_arr = preprocessor.transform(X_test)
 
-        X_train = pd.DataFrame(X_train_arr, columns=X_train.columns)
-        X_test = pd.DataFrame(X_test_arr, columns=X_test.columns)
+        # Get feature names after transformation
+        num_feature_names = num_cols
+        cat_feature_names = preprocessor.named_transformers_['cat'].get_feature_names_out(cat_cols)
+        all_feature_names = list(num_feature_names) + list(cat_feature_names)
+
+        X_train = pd.DataFrame(X_train_arr, columns=all_feature_names)
+        X_test = pd.DataFrame(X_test_arr, columns=all_feature_names)
 
         save_to_csv(X_train, "s3://data/final/train/airbnb_X_train.csv")
         save_to_csv(X_test, "s3://data/final/test/airbnb_X_test.csv")
@@ -422,7 +448,7 @@ def process_etl_airbnb_data():
 
         with mlflow.start_run(run_id=list_run[0].info.run_id):
 
-            mlflow.sklearn.log_artifact(preprocessor, artifact_path="preprocessor")
+            mlflow.sklearn.log_model(preprocessor, artifact_path="preprocessor")
 
             mlflow.log_param("Train observations", X_train.shape[0])
             mlflow.log_param("Test observations", X_test.shape[0])
