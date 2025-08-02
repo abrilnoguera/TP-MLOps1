@@ -1,0 +1,7 @@
+{"timestamp":"2025-08-02T22:13:26.505177","level":"info","event":"DAG bundles loaded: dags-folder","logger":"airflow.dag_processing.bundles.manager.DagBundlesManager"}
+{"timestamp":"2025-08-02T22:13:26.506438","level":"info","event":"Filling up the DagBag from /opt/airflow/dags/etl_process.py","logger":"airflow.models.dagbag.DagBag"}
+{"timestamp":"2025-08-02T22:13:27.761693Z","level":"info","event":"Descargando datos de Buenos Aires...","chan":"stdout","logger":"task"}
+{"timestamp":"2025-08-02T22:13:29.825189Z","level":"info","event":"Registros en Buenos Aires: 35172","chan":"stdout","logger":"task"}
+{"timestamp":"2025-08-02T22:13:29.863813","level":"info","event":"Found credentials in environment variables.","logger":"botocore.credentials"}
+{"timestamp":"2025-08-02T22:13:29.941923","level":"info","event":"Found endpoint for s3 via: environment_service.","logger":"botocore.configprovider"}
+{"timestamp":"2025-08-02T22:13:31.805408","level":"info","event":"Done. Returned value was: None","logger":"airflow.task.operators.airflow.providers.standard.decorators.python._PythonDecoratedOperator"}
