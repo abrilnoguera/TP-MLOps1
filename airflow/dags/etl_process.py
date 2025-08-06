@@ -268,8 +268,8 @@ def process_etl_airbnb_data():
             if e.response['Error']['Code'] != "404":
                 # Something else has gone wrong.
                 raise e
-
-        target_col = Variable.get("target_col")
+        variables = get_variables_from_yaml()
+        target_col = variables["target_col"]
         dataset_log = df.drop(columns=target_col)
 
         # Upload JSON String to an S3 Object
