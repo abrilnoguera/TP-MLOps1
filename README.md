@@ -1,16 +1,19 @@
-Que contiene la implementacion: 
+# TP MLOPS
+## Autores: Pablo Ezequiel Brahim - José Roberto Castro -  Abril Noguera - Kevin Nelson Pennington 
+
+### Que contiene la implementacion: 
 
 - En Apache Airflow, un DAG para obtener datos del repositorio Inside Airbnb Repository. El DAG contiene varias tareas para preprocesar los datos y hacer el split en train y test. Los datasets son guardados en un bucket S3.
 
 - El seguimiento del proceso se hace con MLflow.
 
-Requerimientos:
+### Requerimientos:
 
 - OS: Linux, macOS
 - Paquetes: Docker compose
 - ...
 
-Instalacion:
+### Instalacion:
 
 - Clonar este repositorio
 - En el archivo .env setear la variable de entorno AIRFLOW_UID con la uuid del usuario actual (id -u <username>)
@@ -20,8 +23,13 @@ Para acceder a las apps de Airflow y MLflow, se comunican con los puertos 8080 y
 
 localhost:8080 y localhost:5001
 
-Testeo:
+### Testeo:
 
 Una vez que los servicios estan levantados, se pueden correr las tareas del DAG process_etl_airbnb_data.
 
 Las 4 tareas (get_data, preprocess_data, split_dataset y encode_normalize_features) deberian terminar con state=success 
+
+Que falta:
+Aun falta completar la implementacion y testeo del DAG para reentrenar el modelo. Las tareas no se completan satisfactoriamente. Es necesario debuguear un poco las funciones para corregir.
+
+Resta ademas toda la implementacion de la API para realizar predicciones.
