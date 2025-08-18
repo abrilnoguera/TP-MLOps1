@@ -46,7 +46,7 @@ def predictions_dag():
         # Resolve values with minimal defaults (host/port often come from YAML)
         model_reg_name = cfg.get("MODEL_REG_NAME", "airbnb_model_prod")
         model_alias = cfg.get("MODEL_ALIAS", "champion")
-        features_uri = cfg.get("FEATURES_URI", "s3://data/final/full/airbnb_features.csv")
+        features_uri = cfg.get("FEATURES_URI", "s3://data/final/test/airbnb_X_test.csv")
         output_base_uri = cfg.get("OUTPUT_BASE_URI", "s3://data/predictions/")
         id_column = cfg.get("ID_COLUMN", "listing_id")
 
@@ -90,6 +90,9 @@ def predictions_dag():
         - Saves a small JSON manifest with model metadata next to the outputs
         Returns the final output prefix (partition path).
         """
+        import datetime as dt
+        import numpy as np
+        import pandas as pd
         import awswrangler as wr
         import mlflow
 
@@ -101,41 +104,70 @@ def predictions_dag():
         client = mlflow.MlflowClient()
 
         # Get model by alias (champion/challenger)
-        model_data = client.get_model_version_by_alias(cfg["model_reg_name"], cfg["model_alias"])
+        mv = client.get_model_version_by_alias(cfg["model_reg_name"], cfg["model_alias"])
 
-        # If you need the run_id for logging or auditing
-        run_id = model_data.run_id
+        run_id = mv.run_id
         print(f"Champion run_id: {run_id}")
 
-        # Load the model itself
-        model = mlflow.sklearn.load_model(model_data.source)
+        # Load the model (sklearn flavor)
+        model = mlflow.sklearn.load_model(mv.source)
+
+        # Figure out expected feature names (strict match for sklearn models)
+        expected_cols = None
+        if hasattr(model, "feature_names_in_"):
+            expected_cols = list(model.feature_names_in_)
+        elif hasattr(model, "named_steps"):
+            clf = model.named_steps.get("clf", None)
+            if clf is not None and hasattr(clf, "feature_names_in_"):
+                expected_cols = list(clf.feature_names_in_)
+        # Si no se puede inferir, dejamos expected_cols=None y solo quitamos el ID
 
         # Destination prefix with timestamp partition
         ts = dt.datetime.utcnow().strftime("%Y%m%d_%H%M%S")
         dest_prefix = f'{cfg["output_base_uri"]}/ts={ts}'
 
-        # Try chunked CSV reading first (works if FEATURES_URI points to CSV)
         chunksize = 200_000
         wrote_any = False
 
-        def _write_chunk(df, part_idx: int):
-            """Compute predictions for a chunk and append to dataset."""
-            import pandas as _pd
+        def _prepare_features(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.Series]:
+            """Drop ID col, align to expected_cols (add missing=0, drop extra, reorder)."""
+            id_series = None
+            id_col = cfg["id_column"]
 
-            # Ensure id column exists
-            if cfg["id_column"] not in df.columns:
-                df[cfg["id_column"]] = df.index.astype("int64")
-
-            # Predict probabilities if available; otherwise hard predictions
-            if hasattr(model, "predict_proba"):
-                proba = model.predict_proba(df)[:, 1]
-                pred = (proba >= 0.5).astype(int)
-                out = _pd.DataFrame(
-                    {cfg["id_column"]: df[cfg["id_column"]], "prediction": pred, "score": proba}
-                )
+            if id_col in df.columns:
+                id_series = df[id_col].copy()
+                X = df.drop(columns=[id_col])
             else:
-                pred = model.predict(df)
-                out = _pd.DataFrame({cfg["id_column"]: df[cfg["id_column"]], "prediction": pred})
+                # si no existe, generamos uno para salida
+                id_series = pd.Series(df.index.astype("int64"), name=id_col)
+                X = df.copy()
+
+            if expected_cols is not None:
+                # agregar faltantes
+                missing = [c for c in expected_cols if c not in X.columns]
+                for c in missing:
+                    X[c] = 0.0
+                # eliminar extras (incluye 'listing_id' u otros no vistos)
+                extra = [c for c in X.columns if c not in expected_cols]
+                if extra:
+                    X = X.drop(columns=extra)
+                # reordenar
+                X = X[expected_cols]
+
+            return X, id_series
+
+        def _write_chunk(df: pd.DataFrame, part_idx: int):
+            """Compute predictions for a chunk and append to dataset."""
+            X, ids = _prepare_features(df)
+
+            # Predict
+            if hasattr(model, "predict_proba"):
+                proba = model.predict_proba(X)[:, 1]
+                pred = (proba >= 0.5).astype(int)
+                out = pd.DataFrame({cfg["id_column"]: ids, "prediction": pred, "score": proba})
+            else:
+                pred = model.predict(X)
+                out = pd.DataFrame({cfg["id_column"]: ids, "prediction": pred})
 
             wr.s3.to_parquet(
                 df=out,
@@ -145,30 +177,29 @@ def predictions_dag():
                 index=False,
             )
 
+        # Try chunked CSV first
         try:
             for i, df in enumerate(wr.s3.read_csv(cfg["features_uri"], chunksize=chunksize)):
                 _write_chunk(df, i)
                 wrote_any = True
         except Exception:
-            # If chunks reading is not supported (e.g., Parquet input), fall back to single read
             pass
 
         if not wrote_any:
-            # Single shot load (csv or parquet)
+            # Single shot load (CSV o Parquet)
             if cfg["features_uri"].lower().endswith(".parquet"):
                 full_df = wr.s3.read_parquet(cfg["features_uri"])
             else:
                 full_df = wr.s3.read_csv(cfg["features_uri"])
-
             _write_chunk(full_df, 0)
 
         # Write manifest with model and data lineage
         manifest = {
             "model_name": cfg["model_reg_name"],
             "alias": cfg["model_alias"],
-            "version": meta["version"],
-            "run_id": meta["run_id"],
-            "source": meta["source"],
+            "version": mv.version,
+            "run_id": run_id,
+            "source": mv.source,
             "features_uri": cfg["features_uri"],
             "output_path": dest_prefix,
             "created_utc": ts,
