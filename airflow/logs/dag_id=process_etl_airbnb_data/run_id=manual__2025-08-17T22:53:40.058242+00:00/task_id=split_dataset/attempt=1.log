@@ -1,0 +1,13 @@
+{"timestamp":"2025-08-17T22:56:19.498247","level":"info","event":"DAG bundles loaded: dags-folder","logger":"airflow.dag_processing.bundles.manager.DagBundlesManager"}
+{"timestamp":"2025-08-17T22:56:19.499229","level":"info","event":"Filling up the DagBag from /opt/airflow/dags/etl_process.py","logger":"airflow.models.dagbag.DagBag"}
+{"timestamp":"2025-08-17T22:56:20.045216","level":"info","event":"Found credentials in environment variables.","logger":"botocore.credentials"}
+{"timestamp":"2025-08-17T22:56:20.231052","level":"info","event":"Found endpoint for s3 via: environment_service.","logger":"botocore.configprovider"}
+{"timestamp":"2025-08-17T22:56:22.977098","level":"info","event":"Found credentials in environment variables.","logger":"botocore.credentials"}
+{"timestamp":"2025-08-17T22:56:23.127225","level":"info","event":"Found endpoint for s3 via: environment_service.","logger":"botocore.configprovider"}
+{"timestamp":"2025-08-17T22:56:23.504342","level":"info","event":"Found credentials in environment variables.","logger":"botocore.credentials"}
+{"timestamp":"2025-08-17T22:56:23.611033","level":"info","event":"Found endpoint for s3 via: environment_service.","logger":"botocore.configprovider"}
+{"timestamp":"2025-08-17T22:56:23.810878","level":"info","event":"Found credentials in environment variables.","logger":"botocore.credentials"}
+{"timestamp":"2025-08-17T22:56:23.884297","level":"info","event":"Found endpoint for s3 via: environment_service.","logger":"botocore.configprovider"}
+{"timestamp":"2025-08-17T22:56:23.931131","level":"info","event":"Found credentials in environment variables.","logger":"botocore.credentials"}
+{"timestamp":"2025-08-17T22:56:23.980091","level":"info","event":"Found endpoint for s3 via: environment_service.","logger":"botocore.configprovider"}
+{"timestamp":"2025-08-17T22:56:24.051711","level":"info","event":"Done. Returned value was: None","logger":"airflow.task.operators.airflow.providers.standard.decorators.python._PythonDecoratedOperator"}

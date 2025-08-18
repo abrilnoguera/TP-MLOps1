@@ -1,0 +1,23 @@
+{"timestamp":"2025-08-17T21:32:16.788869","level":"info","event":"DAG bundles loaded: dags-folder","logger":"airflow.dag_processing.bundles.manager.DagBundlesManager"}
+{"timestamp":"2025-08-17T21:32:16.789493","level":"info","event":"Filling up the DagBag from /opt/airflow/dags/etl_process.py","logger":"airflow.models.dagbag.DagBag"}
+{"timestamp":"2025-08-17T21:32:17.558202","level":"info","event":"Found credentials in environment variables.","logger":"botocore.credentials"}
+{"timestamp":"2025-08-17T21:32:17.649857","level":"info","event":"Found endpoint for s3 via: environment_service.","logger":"botocore.configprovider"}
+{"timestamp":"2025-08-17T21:32:17.828868","level":"info","event":"Found credentials in environment variables.","logger":"botocore.credentials"}
+{"timestamp":"2025-08-17T21:32:17.878626","level":"info","event":"Found endpoint for s3 via: environment_service.","logger":"botocore.configprovider"}
+{"timestamp":"2025-08-17T21:32:17.931101","level":"info","event":"Found credentials in environment variables.","logger":"botocore.credentials"}
+{"timestamp":"2025-08-17T21:32:17.997145","level":"info","event":"Found endpoint for s3 via: environment_service.","logger":"botocore.configprovider"}
+{"timestamp":"2025-08-17T21:32:18.252821","level":"warning","event":"/home/airflow/.local/lib/python3.12/site-packages/sklearn/preprocessing/_encoders.py:228: UserWarning: Found unknown categories in columns [0] during transform. These unknown categories will be encoded as all zeros\n  warnings.warn(\n","logger":"py.warnings"}
+{"timestamp":"2025-08-17T21:32:27.099362","level":"info","event":"Found credentials in environment variables.","logger":"botocore.credentials"}
+{"timestamp":"2025-08-17T21:32:27.289912","level":"info","event":"Found endpoint for s3 via: environment_service.","logger":"botocore.configprovider"}
+{"timestamp":"2025-08-17T21:32:29.336230","level":"info","event":"Found credentials in environment variables.","logger":"botocore.credentials"}
+{"timestamp":"2025-08-17T21:32:29.464775","level":"info","event":"Found endpoint for s3 via: environment_service.","logger":"botocore.configprovider"}
+{"timestamp":"2025-08-17T21:32:29.528096","level":"info","event":"Found credentials in environment variables.","logger":"botocore.credentials"}
+{"timestamp":"2025-08-17T21:32:29.591757","level":"info","event":"Found endpoint for s3 via: environment_service.","logger":"botocore.configprovider"}
+{"timestamp":"2025-08-17T21:32:30.057295","level":"info","event":"Found credentials in environment variables.","logger":"botocore.credentials"}
+{"timestamp":"2025-08-17T21:32:30.120755","level":"info","event":"Found endpoint for s3 via: environment_service.","logger":"botocore.configprovider"}
+{"timestamp":"2025-08-17T21:32:31.830621Z","level":"error","event":"2025/08/17 21:32:31 WARNING mlflow.models.model: `artifact_path` is deprecated. Please use `name` instead.","chan":"stderr","logger":"task"}
+{"timestamp":"2025-08-17T21:32:32.327438Z","level":"error","event":"2025/08/17 21:32:32 WARNING mlflow.sklearn: Model was missing function: predict. Not logging python_function flavor!","chan":"stderr","logger":"task"}
+{"timestamp":"2025-08-17T21:32:39.498667Z","level":"error","event":"\u001b[31m2025/08/17 21:32:39 WARNING mlflow.models.model: Model logged without a signature and input example. Please set `input_example` parameter when logging the model to auto infer the model signature.\u001b[0m","chan":"stderr","logger":"task"}
+{"timestamp":"2025-08-17T21:32:40.653642Z","level":"info","event":"🏃 View run ETL_run_2025/08/17-21:31:41\" at: http://mlflow:5000/#/experiments/1/runs/8b931534932b4abcbd7669be0c6daab4","chan":"stdout","logger":"task"}
+{"timestamp":"2025-08-17T21:32:40.654657Z","level":"info","event":"🧪 View experiment at: http://mlflow:5000/#/experiments/1","chan":"stdout","logger":"task"}
+{"timestamp":"2025-08-17T21:32:40.732877","level":"info","event":"Done. Returned value was: None","logger":"airflow.task.operators.airflow.providers.standard.decorators.python._PythonDecoratedOperator"}

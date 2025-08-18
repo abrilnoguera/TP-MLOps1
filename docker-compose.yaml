@@ -45,6 +45,8 @@ x-airflow-common: &airflow-common
     AWS_SECRET_ACCESS_KEY: ${MINIO_SECRET_ACCESS_KEY:-minio123}
     AWS_ENDPOINT_URL_S3: http://s3:9000
     MLFLOW_S3_ENDPOINT_URL: http://s3:9000
+    AIRFLOW__CORE__DAG_PARSING_MODE: classic
+    AIRFLOW__CORE__ENABLE_DAG_BUNDLES: "False"
   volumes:
     - ${AIRFLOW_PROJ_DIR:-./airflow}/dags:/opt/airflow/dags
     - ${AIRFLOW_PROJ_DIR:-./airflow}/logs:/opt/airflow/logs
@@ -162,7 +164,7 @@ services:
       postgres:
         condition: service_healthy
     ports:
-      - "${MLFLOW_PORT:-5000}:5000"
+      - "${MLFLOW_PORT:-5001}:5000"
     networks:
       - frontend
       - backend
@@ -279,6 +281,8 @@ services:
       # Required to handle warm shutdown of the celery workers properly
       # See https://airflow.apache.org/docs/docker-stack/entrypoint.html#signal-propagation
       DUMB_INIT_SETSID: "0"
+      AIRFLOW__CORE__DAG_PARSING_MODE: classic
+      AIRFLOW__CORE__ENABLE_DAG_BUNDLES: "False"
     restart: always
     depends_on:
       <<: *airflow-common-depends-on
@@ -310,6 +314,8 @@ services:
     environment:
       <<: *airflow-common-env
       CONNECTION_CHECK_MAX_COUNT: "0"
+      AIRFLOW__CORE__DAG_PARSING_MODE: classic
+      AIRFLOW__CORE__ENABLE_DAG_BUNDLES: "False"
     # Workaround for entrypoint issue. See: https://github.com/apache/airflow/issues/16252
     command:
       - bash
@@ -404,6 +410,8 @@ services:
       _AIRFLOW_WWW_USER_USERNAME: ${_AIRFLOW_WWW_USER_USERNAME:-airflow}
       _AIRFLOW_WWW_USER_PASSWORD: ${_AIRFLOW_WWW_USER_PASSWORD:-airflow}
       _PIP_ADDITIONAL_REQUIREMENTS: ''
+      AIRFLOW__CORE__DAG_PARSING_MODE: classic
+      AIRFLOW__CORE__ENABLE_DAG_BUNDLES: "False"
     user: "0:0"
 
 networks:

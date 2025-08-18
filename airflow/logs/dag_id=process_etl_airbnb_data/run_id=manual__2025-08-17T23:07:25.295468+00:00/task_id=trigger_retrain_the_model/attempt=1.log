@@ -1,0 +1,4 @@
+{"timestamp":"2025-08-17T23:10:21.133371","level":"info","event":"DAG bundles loaded: dags-folder","logger":"airflow.dag_processing.bundles.manager.DagBundlesManager"}
+{"timestamp":"2025-08-17T23:10:21.134692","level":"info","event":"Filling up the DagBag from /opt/airflow/dags/etl_process.py","logger":"airflow.models.dagbag.DagBag"}
+{"timestamp":"2025-08-17T23:10:21.175644","level":"info","event":"Triggering Dag Run.","trigger_dag_id":"retrain_the_model","logger":"task"}
+{"timestamp":"2025-08-17T23:10:21.391445","level":"info","event":"Dag Run triggered successfully.","trigger_dag_id":"retrain_the_model","logger":"task"}

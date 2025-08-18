@@ -1,0 +1,18 @@
+{"timestamp":"2025-08-18T00:38:05.918025","level":"info","event":"DAG bundles loaded: dags-folder","logger":"airflow.dag_processing.bundles.manager.DagBundlesManager"}
+{"timestamp":"2025-08-18T00:38:05.922490","level":"info","event":"Filling up the DagBag from /opt/airflow/dags/retrain_the_model.py","logger":"airflow.models.dagbag.DagBag"}
+{"timestamp":"2025-08-18T00:38:13.809523","level":"info","event":"Found credentials in environment variables.","logger":"botocore.credentials"}
+{"timestamp":"2025-08-18T00:38:14.587820","level":"info","event":"Found endpoint for s3 via: environment_service.","logger":"botocore.configprovider"}
+{"timestamp":"2025-08-18T00:38:22.250255","level":"info","event":"Found credentials in environment variables.","logger":"botocore.credentials"}
+{"timestamp":"2025-08-18T00:38:23.345143","level":"info","event":"Found endpoint for s3 via: environment_service.","logger":"botocore.configprovider"}
+{"timestamp":"2025-08-18T00:38:24.039386","level":"info","event":"Found credentials in environment variables.","logger":"botocore.credentials"}
+{"timestamp":"2025-08-18T00:38:24.494258","level":"info","event":"Found endpoint for s3 via: environment_service.","logger":"botocore.configprovider"}
+{"timestamp":"2025-08-18T00:38:25.343807","level":"info","event":"Found credentials in environment variables.","logger":"botocore.credentials"}
+{"timestamp":"2025-08-18T00:38:25.658930","level":"info","event":"Found endpoint for s3 via: environment_service.","logger":"botocore.configprovider"}
+{"timestamp":"2025-08-18T00:38:49.105837Z","level":"info","event":"No champion model found. Training initial model...","chan":"stdout","logger":"task"}
+{"timestamp":"2025-08-18T00:38:53.313842Z","level":"error","event":"2025/08/18 00:38:53 INFO mlflow.system_metrics.system_metrics_monitor: Skip logging GPU metrics. Set logger level to DEBUG for more details.","chan":"stderr","logger":"task"}
+{"timestamp":"2025-08-18T00:38:56.018577Z","level":"error","event":"2025/08/18 00:38:53 INFO mlflow.system_metrics.system_metrics_monitor: Started monitoring system metrics.","chan":"stderr","logger":"task"}
+{"timestamp":"2025-08-18T00:38:54.786959","level":"warning","event":"/home/airflow/.local/lib/python3.12/site-packages/joblib/parallel.py:1379: UserWarning: Loky-backed parallel loops cannot be called in a multiprocessing, setting n_jobs=1\n  n_jobs = self._backend.configure(\n","logger":"py.warnings"}
+{"timestamp":"2025-08-18T00:39:18.125694","level":"warning","event":"/home/airflow/.local/lib/python3.12/site-packages/sklearn/ensemble/_base.py:214: UserWarning: Loky-backed parallel loops cannot be called in a multiprocessing, setting n_jobs=1\n  n_jobs = min(effective_n_jobs(n_jobs), n_estimators)\n","logger":"py.warnings"}
+{"timestamp":"2025-08-18T00:39:34.862695","level":"warning","event":"/home/airflow/.local/lib/python3.12/site-packages/sklearn/ensemble/_base.py:214: UserWarning: Loky-backed parallel loops cannot be called in a multiprocessing, setting n_jobs=1\n  n_jobs = min(effective_n_jobs(n_jobs), n_estimators)\n","logger":"py.warnings"}
+{"timestamp":"2025-08-18T00:39:49.512167Z","level":"error","event":"Server indicated the task shouldn't be running anymore. Terminating process","detail":{"detail":{"reason":"not_running","message":"TI is no longer in the running state and task should terminate","current_state":"failed"}},"logger":"task"}
+{"timestamp":"2025-08-18T00:39:54.699214Z","level":"error","event":"Task killed!","logger":"task"}

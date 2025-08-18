@@ -1,6 +1,22 @@
 import requests
 from io import BytesIO
 import pandas as pd
+import yaml
+import os
+
+def get_variables_from_yaml():
+    """
+    Helper to read variables from YAML, same as in your ETL DAG.
+    Looks first in /opt/secrets (container path), then local path for dev.
+    """
+    yaml_path = "/opt/secrets/variables.yaml"
+    if os.path.exists(yaml_path):
+        with open(yaml_path, "r") as f:
+            return yaml.safe_load(f)
+    else:
+        yaml_path = "./airflow/secrets/variables.yaml"
+        with open(yaml_path, "r") as f:
+            return yaml.safe_load(f)
 
 def load_and_get_df(url: str, alias: str) -> pd.DataFrame:
     '''

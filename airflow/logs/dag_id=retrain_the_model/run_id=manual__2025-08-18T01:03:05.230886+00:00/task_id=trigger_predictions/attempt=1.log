@@ -1,0 +1,4 @@
+{"timestamp":"2025-08-18T01:07:38.457828","level":"info","event":"DAG bundles loaded: dags-folder","logger":"airflow.dag_processing.bundles.manager.DagBundlesManager"}
+{"timestamp":"2025-08-18T01:07:38.459358","level":"info","event":"Filling up the DagBag from /opt/airflow/dags/retrain_the_model.py","logger":"airflow.models.dagbag.DagBag"}
+{"timestamp":"2025-08-18T01:07:38.509733","level":"info","event":"Triggering Dag Run.","trigger_dag_id":"make_predictions","logger":"task"}
+{"timestamp":"2025-08-18T01:07:38.931163","level":"info","event":"Dag Run triggered successfully.","trigger_dag_id":"make_predictions","logger":"task"}

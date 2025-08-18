@@ -61,20 +61,21 @@ Este proyecto implementa un flujo de trabajo completo de Machine Learning enfoca
    - **encode_normalize_features** → Escala numéricos, aplica one-hot encoding y registra en MLflow. 
    - Al finalizar, **dispara automáticamente** el DAG de re-entrenamiento. 
 
-2. ### `retrain_the_model` (Ejecutado automáticamente tras scraping o de forma diaria)
+2. ### `retrain_the_model` (ejecutado automáticamente tras scraping o de forma diaria)
    
-   - **train_the_challenger_model** → Clona el modelo actual en producción (champion), lo re-entrena con los datos más recientes y lo registra como modelo candidato (challenger).  
-   - **evaluate_champion_challenger** → Compara el modelo champion y el challenger usando métricas (F1, accuracy, precision, recall, AUC).  
-      - Si el challenger supera al champion en F1, se promueve a producción.  
-      - Si no, se descarta y se mantiene el modelo actual.  
+   - **train_the_challenger_model** → clona el modelo actual en producción (champion), lo reentrena con los datos más recientes y lo registra como candidato (challenger).  
+   - **evaluate_champion_challenger** → compara el champion vs. challenger usando métricas de desempeño (AUC, F1, accuracy, precision, recall).  
+      - Si el challenger supera al champion en **AUC**, se promueve automáticamente a producción.  
+      - En caso contrario, se descarta y se mantiene el modelo actual.  
 
-   - **Resultado final:** siempre queda en producción el mejor modelo disponible según el desempeño en test.  
-   - Al finalizar, **dispara automáticamente** el DAG de predicción.
+   - **Resultado final:** siempre queda en producción el modelo con mejor desempeño en test.  
+   - Al finalizar, **dispara automáticamente** el DAG `make_predictions`.
+   - **Observaciones:** Los modelos estan muy overfiteados y requieren de mejoras para su aplicación.
 
-3. ### `make_predictions` (Ejecutado automáticamente tras re-entrenamiento o de forma diaria)
-   - Carga el modelo en stage `"Production"` desde **MLflow**.
-   - Prepara nuevas muestras o clientes para predicción.
-   - Genera predicciones y las guarda en el directorio `data/predicciones/`.
+3. ### `make_predictions` (ejecutado automáticamente tras reentrenamiento o de forma diaria)
+   - Carga desde **MLflow** el modelo en stage `"Production"`.  
+   - Preprocesa los datos más recientes y genera las predicciones.  
+   - Guarda los resultados en la base de datos para su posterior uso en dashboards o integraciones.  
 
 ## Ejecución
 
@@ -92,7 +93,7 @@ Si estás en Linux o MacOS, en el archivo .env, reemplaza AIRFLOW_UID por el de 
 
 ### 4. Levantar el entorno completo
 ```bash
-docker-compose up --build -d
+docker compose --profile all up
 ```
 
 Para detenerlo:

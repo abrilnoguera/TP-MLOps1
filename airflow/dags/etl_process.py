@@ -6,21 +6,6 @@ import os
 from airflow.decorators import dag, task
 from airflow.operators.trigger_dagrun import TriggerDagRunOperator 
 
-def get_variables_from_yaml():
-    """
-    Helper function to read variables directly from YAML file.
-    This avoids issues with Airflow LocalFilesystemBackend and list parsing.
-    """
-    yaml_path = "/opt/secrets/variables.yaml"
-    if os.path.exists(yaml_path):
-        with open(yaml_path, 'r') as file:
-            return yaml.safe_load(file)
-    else:
-        # Fallback to local path for development
-        yaml_path = "./airflow/secrets/variables.yaml"
-        with open(yaml_path, 'r') as file:
-            return yaml.safe_load(file)
-
 markdown_text = """
 ### ETL Process for AirBnb Dataset
 
@@ -62,7 +47,7 @@ def process_etl_airbnb_data():
         """
         import awswrangler as wr
         from airflow.models import Variable
-        from airflow.dags.utils.utils_etl import load_and_get_df
+        from utils.utils_etl import load_and_get_df
 
         # Fetch dataset
         urls = {
@@ -103,7 +88,7 @@ def process_etl_airbnb_data():
 
         from airflow.models import Variable
 
-        from airflow.dags.utils.utils_etl import eliminar_columnas_con_muchos_nulos, eliminar_filas_con_nulos, remove_html_tags, obtener_tasas_cambio, convert_currency
+        from utils.utils_etl import get_variables_from_yaml, eliminar_columnas_con_muchos_nulos, eliminar_filas_con_nulos, remove_html_tags, obtener_tasas_cambio, convert_currency
 
         data_original_path = "s3://data/raw/airbnb.csv"
         data_end_path = "s3://data/raw/airbnb_preprocessed.csv"
@@ -317,6 +302,8 @@ def process_etl_airbnb_data():
         from sklearn.model_selection import train_test_split
         from airflow.models import Variable
 
+        from utils.utils_etl import get_variables_from_yaml
+
         def save_to_csv(df, path):
             wr.s3.to_csv(df=df,
                          path=path,
@@ -364,14 +351,28 @@ def process_etl_airbnb_data():
 
         from sklearn.preprocessing import StandardScaler, OneHotEncoder
         from sklearn.compose import ColumnTransformer
+        from imblearn.over_sampling import RandomOverSampler
         import mlflow.sklearn
+
+        from utils.utils_etl import get_variables_from_yaml
+        from utils.plots import plot_correlation_with_target, plot_information_gain_with_target, plot_class_balance
 
         def save_to_csv(df, path):
             wr.s3.to_csv(df=df,
                          path=path,
                          index=False)
+        
+        def create_plots(X, y):
+            # Plot correlation and information gain with target
+            target_column = y.columns[0]
+            correlation_plot = plot_correlation_with_target(X, y, target_col=target_column)
+            information_gain_plot = plot_information_gain_with_target(X, y, target_col=target_column)
+            class_balance_plot = plot_class_balance(y, target_col=target_column)
+
+            return {"correlation_plot": correlation_plot, "information_gain_plot": information_gain_plot, "class_balance_plot": class_balance_plot}
 
         X_train = wr.s3.read_csv("s3://data/final/train/airbnb_X_train.csv")
+        y_train = wr.s3.read_csv("s3://data/final/train/airbnb_y_train.csv")
         X_test = wr.s3.read_csv("s3://data/final/test/airbnb_X_test.csv")
 
         # Load variables from YAML
@@ -396,7 +397,12 @@ def process_etl_airbnb_data():
         X_train = pd.DataFrame(X_train_arr, columns=all_feature_names)
         X_test = pd.DataFrame(X_test_arr, columns=all_feature_names)
 
+        # Load plots
+        plots = create_plots(X_train, y_train)
+
+        # Save transformed datasets
         save_to_csv(X_train, "s3://data/final/train/airbnb_X_train.csv")
+        save_to_csv(y_train, "s3://data/final/train/airbnb_y_train.csv")
         save_to_csv(X_test, "s3://data/final/test/airbnb_X_test.csv")
 
         # Save dataset metadata to S3
@@ -434,6 +440,10 @@ def process_etl_airbnb_data():
             mlflow.log_param("Standard Scaler mean values",preprocessor.named_transformers_['num'].scale_)
             mlflow.log_param("One Hot Encoder categories", preprocessor.named_transformers_['cat'].categories_)
 
+            # Log plots as artifacts
+            for plot_name, plot_fig in plots.items():
+                mlflow.log_figure(plot_fig, f"feature_evaluation_plots/{plot_name}.png")
+
     raw = get_data()
     preprocessed = preprocess_data()
     splitted = split_dataset()
@@ -444,6 +454,8 @@ def process_etl_airbnb_data():
         task_id="trigger_retrain_the_model",
         trigger_dag_id="retrain_the_model",
         wait_for_completion=False,
+        reset_dag_run=True,
+        retries=0,
     )
 
     # Task dependencies

@@ -1,0 +1,25 @@
+{"timestamp":"2025-08-17T19:43:53.976287","level":"info","event":"DAG bundles loaded: dags-folder","logger":"airflow.dag_processing.bundles.manager.DagBundlesManager"}
+{"timestamp":"2025-08-17T19:43:53.976916","level":"info","event":"Filling up the DagBag from /opt/airflow/dags/retrain_the_model.py","logger":"airflow.models.dagbag.DagBag"}
+{"timestamp":"2025-08-17T19:43:55.098686","level":"info","event":"Found credentials in environment variables.","logger":"botocore.credentials"}
+{"timestamp":"2025-08-17T19:43:55.551115","level":"info","event":"Found endpoint for s3 via: environment_service.","logger":"botocore.configprovider"}
+{"timestamp":"2025-08-17T19:43:56.765049","level":"info","event":"Found credentials in environment variables.","logger":"botocore.credentials"}
+{"timestamp":"2025-08-17T19:43:56.840458","level":"info","event":"Found endpoint for s3 via: environment_service.","logger":"botocore.configprovider"}
+{"timestamp":"2025-08-17T19:43:57.076112","level":"info","event":"Found credentials in environment variables.","logger":"botocore.credentials"}
+{"timestamp":"2025-08-17T19:43:57.168530","level":"info","event":"Found endpoint for s3 via: environment_service.","logger":"botocore.configprovider"}
+{"timestamp":"2025-08-17T19:43:58.259051","level":"info","event":"Found credentials in environment variables.","logger":"botocore.credentials"}
+{"timestamp":"2025-08-17T19:43:58.639408","level":"info","event":"Found endpoint for s3 via: environment_service.","logger":"botocore.configprovider"}
+{"timestamp":"2025-08-17T19:43:59.442581Z","level":"info","event":"No champion model found. Training initial model...","chan":"stdout","logger":"task"}
+{"timestamp":"2025-08-17T19:44:04.009671Z","level":"error","event":"2025/08/17 19:44:04 INFO mlflow.system_metrics.system_metrics_monitor: Skip logging GPU metrics. Set logger level to DEBUG for more details.","chan":"stderr","logger":"task"}
+{"timestamp":"2025-08-17T19:44:04.046755Z","level":"error","event":"2025/08/17 19:44:04 INFO mlflow.system_metrics.system_metrics_monitor: Started monitoring system metrics.","chan":"stderr","logger":"task"}
+{"timestamp":"2025-08-17T19:44:04.045476","level":"warning","event":"/home/airflow/.local/lib/python3.12/site-packages/joblib/parallel.py:1379: UserWarning: Loky-backed parallel loops cannot be called in a multiprocessing, setting n_jobs=1\n  n_jobs = self._backend.configure(\n","logger":"py.warnings"}
+{"timestamp":"2025-08-17T19:48:36.498832Z","level":"info","event":"🏃 View run Trial: 0 at: http://mlflow:5000/#/experiments/1/runs/57e935ab17684ace9efccedb8034e1f5","chan":"stdout","logger":"task"}
+{"timestamp":"2025-08-17T19:48:36.505877Z","level":"info","event":"🧪 View experiment at: http://mlflow:5000/#/experiments/1","chan":"stdout","logger":"task"}
+{"timestamp":"2025-08-17T19:48:36.554618Z","level":"info","event":"Initial trial 0 achieved value: 0.0009132420091324201","chan":"stdout","logger":"task"}
+{"timestamp":"2025-08-17T19:48:36.638175","level":"warning","event":"/home/airflow/.local/lib/python3.12/site-packages/joblib/parallel.py:1379: UserWarning: Loky-backed parallel loops cannot be called in a multiprocessing, setting n_jobs=1\n  n_jobs = self._backend.configure(\n","logger":"py.warnings"}
+{"timestamp":"2025-08-17T19:48:39.287373Z","level":"info","event":"🏃 View run Trial: 1 at: http://mlflow:5000/#/experiments/1/runs/8101e4debe3d451b85f394486b00f673","chan":"stdout","logger":"task"}
+{"timestamp":"2025-08-17T19:48:39.288480Z","level":"info","event":"🧪 View experiment at: http://mlflow:5000/#/experiments/1","chan":"stdout","logger":"task"}
+{"timestamp":"2025-08-17T19:48:39.335498Z","level":"info","event":"Trial 1 achieved value: 0.12209189215294095 with  99.2520% improvement","chan":"stdout","logger":"task"}
+{"timestamp":"2025-08-17T19:48:39.375143","level":"warning","event":"/home/airflow/.local/lib/python3.12/site-packages/joblib/parallel.py:1379: UserWarning: Loky-backed parallel loops cannot be called in a multiprocessing, setting n_jobs=1\n  n_jobs = self._backend.configure(\n","logger":"py.warnings"}
+{"timestamp":"2025-08-17T19:57:11.879192Z","level":"info","event":"🏃 View run Trial: 2 at: http://mlflow:5000/#/experiments/1/runs/39365b7b25464a6b909902f075b95c3a","chan":"stdout","logger":"task"}
+{"timestamp":"2025-08-17T19:57:11.883914Z","level":"info","event":"🧪 View experiment at: http://mlflow:5000/#/experiments/1","chan":"stdout","logger":"task"}
+{"timestamp":"2025-08-17T19:57:11.984190","level":"warning","event":"/home/airflow/.local/lib/python3.12/site-packages/joblib/parallel.py:1379: UserWarning: Loky-backed parallel loops cannot be called in a multiprocessing, setting n_jobs=1\n  n_jobs = self._backend.configure(\n","logger":"py.warnings"}
