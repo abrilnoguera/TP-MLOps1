@@ -1,505 +1,242 @@
+import os
 import json
-import pickle
-import boto3
-import mlflow
-
+import requests
 import numpy as np
 import pandas as pd
+import mlflow
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel, Field
+from typing import List, Dict, Any, Optional
 
-from typing import Literal, List
-from fastapi import FastAPI, Body, BackgroundTasks, HTTPException
-from fastapi.responses import JSONResponse
-from fastapi.encoders import jsonable_encoder
-from pydantic import BaseModel, Field, validator
-from typing_extensions import Annotated
-from enum import Enum
+# ---- ENV ----
+MLFLOW_TRACKING_URI = os.getenv("MLFLOW_TRACKING_URI", "http://mlflow:5000")
+MODEL_NAME = os.getenv("MODEL_NAME", "airbnb_model_prod")
+MODEL_ALIAS = os.getenv("MODEL_ALIAS", "champion")
 
-# Valid categories based on training data
-class PropertyType(str, Enum):
-    BUS = "Bus"
-    CAMPER_RV = "Camper/RV"
-    CASA_PARTICULAR = "Casa particular"
-    CASTLE = "Castle"
-    CAVE = "Cave"
-    ENTIRE_BUNGALOW = "Entire bungalow"
-    ENTIRE_CABIN = "Entire cabin"
-    ENTIRE_CHALET = "Entire chalet"
-    ENTIRE_CONDO = "Entire condo"
-    ENTIRE_COTTAGE = "Entire cottage"
-    ENTIRE_GUEST_SUITE = "Entire guest suite"
-    ENTIRE_GUESTHOUSE = "Entire guesthouse"
-    ENTIRE_HOME = "Entire home"
-    ENTIRE_HOME_APT = "Entire home/apt"
-    ENTIRE_LOFT = "Entire loft"
-    ENTIRE_PLACE = "Entire place"
-    ENTIRE_RENTAL_UNIT = "Entire rental unit"
-    ENTIRE_SERVICED_APARTMENT = "Entire serviced apartment"
-    ENTIRE_TOWNHOUSE = "Entire townhouse"
-    ENTIRE_VACATION_HOME = "Entire vacation home"
-    ENTIRE_VILLA = "Entire villa"
-    PENSION = "Pension"
-    PRIVATE_ROOM = "Private room"
-    PRIVATE_ROOM_BB = "Private room in bed and breakfast"
-    PRIVATE_ROOM_CASA = "Private room in casa particular"
-    PRIVATE_ROOM_CASTLE = "Private room in castle"
-    PRIVATE_ROOM_CHALET = "Private room in chalet"
-    PRIVATE_ROOM_CONDO = "Private room in condo"
-    PRIVATE_ROOM_GUEST_SUITE = "Private room in guest suite"
-    PRIVATE_ROOM_GUESTHOUSE = "Private room in guesthouse"
-    PRIVATE_ROOM_HOME = "Private room in home"
-    PRIVATE_ROOM_HOSTEL = "Private room in hostel"
-    PRIVATE_ROOM_LOFT = "Private room in loft"
-    PRIVATE_ROOM_RENTAL = "Private room in rental unit"
-    PRIVATE_ROOM_RESORT = "Private room in resort"
-    PRIVATE_ROOM_SERVICED = "Private room in serviced apartment"
-    PRIVATE_ROOM_TINY = "Private room in tiny home"
-    PRIVATE_ROOM_TOWNHOUSE = "Private room in townhouse"
-    PRIVATE_ROOM_VACATION = "Private room in vacation home"
-    PRIVATE_ROOM_VILLA = "Private room in villa"
-    ROOM_APARTHOTEL = "Room in aparthotel"
-    ROOM_BB = "Room in bed and breakfast"
-    ROOM_BOUTIQUE = "Room in boutique hotel"
-    ROOM_HOSTEL = "Room in hostel"
-    ROOM_HOTEL = "Room in hotel"
-    ROOM_SERVICED = "Room in serviced apartment"
-    SHARED_ROOM = "Shared room"
-    SHARED_ROOM_BARN = "Shared room in barn"
-    SHARED_ROOM_BB = "Shared room in bed and breakfast"
-    SHARED_ROOM_CASA = "Shared room in casa particular"
-    SHARED_ROOM_CONDO = "Shared room in condo"
-    SHARED_ROOM_GUESTHOUSE = "Shared room in guesthouse"
-    SHARED_ROOM_HOME = "Shared room in home"
-    SHARED_ROOM_HOSTEL = "Shared room in hostel"
-    SHARED_ROOM_HOTEL = "Shared room in hotel"
-    SHARED_ROOM_LOFT = "Shared room in loft"
-    SHARED_ROOM_RENTAL = "Shared room in rental unit"
-    SHARED_ROOM_SERVICED = "Shared room in serviced apartment"
-    SHARED_ROOM_TENT = "Shared room in tent"
-    SHARED_ROOM_TOWNHOUSE = "Shared room in townhouse"
-    SHARED_ROOM_VILLA = "Shared room in villa"
-    TINY_HOME = "Tiny home"
-    TOWER = "Tower"
+# ---- GLOBAL STATE ----
+model = None
+model_version: Optional[int] = None
+expected_cols: Optional[list[str]] = None
+model_uri_cached: Optional[str] = None
+last_error: Optional[str] = None
 
-class RoomType(str, Enum):
-    ENTIRE_HOME_APT = "Entire home/apt"
-    HOTEL_ROOM = "Hotel room"
-    PRIVATE_ROOM = "Private room"
-    SHARED_ROOM = "Shared room"
+# ---- FASTAPI ----
+app = FastAPI(title="Airbnb Predictor", version="1.0.0")
 
-class City(str, Enum):
-    BUENOS_AIRES = "Buenos Aires"
-
-
-def load_model(model_name: str, alias: str):
+# -------------------------------
+# Helpers
+# -------------------------------
+def _infer_expected_cols(loaded_model) -> Optional[list[str]]:
     """
-    Load a trained model and associated data dictionary.
-
-    This function attempts to load a trained model specified by its name and alias. If the model is not found in the
-    MLflow registry, it loads the default model from a file. Additionally, it loads information about the ETL pipeline
-    from an S3 bucket. If the data dictionary is not found in the S3 bucket, it loads it from a local file.
-
-    :param model_name: The name of the model.
-    :param alias: The alias of the model version.
-    :return: A tuple containing the loaded model, its version, and the data dictionary.
+    - If model has feature_names_in_, use that
+    - Else if it's a pipeline, try named_steps['clf'].feature_names_in_
+    - Else unknown (None)
     """
+    if hasattr(loaded_model, "feature_names_in_"):
+        return list(loaded_model.feature_names_in_)
+    if hasattr(loaded_model, "named_steps"):
+        clf = loaded_model.named_steps.get("clf", None)
+        if clf is not None and hasattr(clf, "feature_names_in_"):
+            return list(clf.feature_names_in_)
+    return None
+
+
+def _prepare_features(df: pd.DataFrame, id_col: str = "listing_id") -> tuple[pd.DataFrame, pd.Series]:
+    """
+    - keep an id column if present (or synthesize one)
+    - align to expected_cols (add missing=0.0, drop extras, reorder)
+    """
+    if id_col in df.columns:
+        ids = df[id_col].copy()
+        X = df.drop(columns=[id_col])
+    else:
+        ids = pd.Series(df.index.astype("int64"), name=id_col)
+        X = df.copy()
+
+    global expected_cols
+    if expected_cols is not None:
+        missing = [c for c in expected_cols if c not in X.columns]
+        for c in missing:
+            X[c] = 0.0
+        extra = [c for c in X.columns if c not in expected_cols]
+        if extra:
+            X = X.drop(columns=extra)
+        X = X[expected_cols]
+
+    return X, ids
+
+def load_model() -> None:
+    """
+    Robust loader:
+      - Resolve alias -> ModelVersion
+      - Try storage_location, then source, then runs:/<run_id>/model (if exists), then models:/NAME@ALIAS
+      - Prefer sklearn flavor; fallback to pyfunc
+      - Infer expected_cols
+    """
+    import boto3
+    from urllib.parse import urlparse
+
+    global model, model_version, expected_cols, model_uri_cached, last_error
+
+    mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
+
+    client = mlflow.MlflowClient()
 
     try:
-        # Skip MLflow entirely if running locally (no Docker environment)
-        import os
-        if not os.path.exists('/.dockerenv'):
-            print("Local environment detected, skipping MLflow...")
-            raise Exception("Local environment - skip MLflow")
-            
-        # Load the trained model from MLflow with quick timeout
-        print("Attempting MLflow connection...")
-        mlflow.set_tracking_uri('http://mlflow:5000')
-        
-        # Quick connectivity test first (2 second timeout)
-        import requests
-        try:
-            response = requests.get('http://mlflow:5000', timeout=2)
-            print("MLflow server is reachable")
-        except:
-            print("MLflow server not reachable (timeout), using local model")
-            raise Exception("MLflow server not available")
-        
-        client_mlflow = mlflow.MlflowClient()
-        model_data_mlflow = client_mlflow.get_model_version_by_alias(model_name, alias)
-        model_ml = mlflow.sklearn.load_model(model_data_mlflow.source)
-        version_model_ml = int(model_data_mlflow.version)
-        print(f"Loaded model from MLflow: version {version_model_ml}")
+        mv = client.get_model_version_by_alias(MODEL_NAME, MODEL_ALIAS)
+        model_version = int(mv.version)
     except Exception as e:
-        # If there is no registry in MLflow, open the default model
-        print(f"MLflow loading failed ({e}), loading local model...")
-        import os
-        model_path = './files/model.pkl' if os.path.exists('./files/model.pkl') else '/app/files/model.pkl'
+        model = None
+        model_version = None
+        model_uri_cached = None
+        expected_cols = None
+        last_error = f"alias resolve failed: {e}"
+        print(f"[Model] alias resolve failed: {e}")
+        return
+
+    # Helpers
+    def _try_load(uri: str):
         try:
-            file_ml = open(model_path, 'rb')
-            model_ml = pickle.load(file_ml)
-            file_ml.close()
-            version_model_ml = 0
-            print(f"Loaded local model from {model_path}")
-        except Exception as local_error:
-            print(f"Error loading local model: {local_error}")
-            raise local_error
+            try:
+                m = mlflow.sklearn.load_model(uri)
+            except Exception:
+                m = mlflow.pyfunc.load_model(uri)
+            return m, None
+        except Exception as e:
+            return None, str(e)
 
-    try:
-        # Load information of the ETL pipeline from S3
-        s3 = boto3.client('s3')
-
-        s3.head_object(Bucket='data', Key='data_info/data.json')
-        result_s3 = s3.get_object(Bucket='data', Key='data_info/data.json')
-        text_s3 = result_s3["Body"].read().decode()
-        data_dictionary = json.loads(text_s3)
-
-        data_dictionary["standard_scaler_mean"] = np.array(data_dictionary["standard_scaler_mean"])
-        data_dictionary["standard_scaler_std"] = np.array(data_dictionary["standard_scaler_std"])
-        print("Loaded data dictionary from S3")
-    except Exception as e:
-        # If data dictionary is not found in S3, load it from local file
-        print(f"S3 loading failed ({e}), loading local data dictionary...")
-        import os
-        data_path = './files/data.json' if os.path.exists('./files/data.json') else '/app/files/data.json'
+    def _s3_list(prefix: str):
+        """List keys in MinIO for debugging."""
         try:
-            file_s3 = open(data_path, 'r')
-            data_dictionary = json.load(file_s3)
-            file_s3.close()
-            print(f"Loaded local data dictionary from {data_path}")
-        except Exception as local_error:
-            print(f"Error loading local data dictionary: {local_error}")
-            raise local_error
+            s3 = boto3.client(
+                "s3",
+                endpoint_url=os.getenv("MLFLOW_S3_ENDPOINT_URL", "http://s3:9000"),
+                aws_access_key_id=os.getenv("AWS_ACCESS_KEY_ID", "minio"),
+                aws_secret_access_key=os.getenv("AWS_SECRET_ACCESS_KEY", "minio123"),
+                config=boto3.session.Config(s3={'addressing_style': 'path'})
+            )
+            # Bucket is usually 'mlflow'; prefix like '1/<run_id>/artifacts/model/'
+            resp = s3.list_objects_v2(Bucket="mlflow", Prefix=prefix, MaxKeys=5)
+            return [c["Key"] for c in resp.get("Contents", [])]
+        except Exception as e:
+            return [f"(s3 list failed: {e})"]
 
-    return model_ml, version_model_ml, data_dictionary
+    # Candidate URIs to try
+    candidates: list[tuple[str, str]] = []
 
+    # 1) storage_location (if present)
+    storage_loc = getattr(mv, "storage_location", None)
+    if storage_loc:
+        candidates.append(("storage_location", storage_loc))
 
-def check_model():
-    """
-    Check for updates in the model and update if necessary.
+    # 2) source
+    if mv.source:
+        candidates.append(("source", mv.source))
 
-    The function checks the model registry to see if the version of the champion model has changed. If the version
-    has changed, it updates the model and the data dictionary accordingly.
+    # 3) runs:/<run_id>/model  (only if the prefix actually has files)
+    run_prefix = f"1/{mv.run_id}/artifacts/model/"
+    keys = _s3_list(run_prefix)
+    if keys and not str(keys[0]).startswith("(s3 list failed"):
+        candidates.append(("runs_model", f"runs:/{mv.run_id}/model"))
+    else:
+        # dejar log del listado vacío para diagnóstico
+        print(f"[Model] S3 prefix empty for run: bucket=mlflow, prefix={run_prefix}, keys={keys}")
 
-    :return: None
-    """
+    # 4) models:/NAME@ALIAS (fallback)
+    candidates.append(("models_alias", f"models:/{MODEL_NAME}@{MODEL_ALIAS}"))
 
-    global model
-    global data_dict
-    global version_model
+    last_errs: list[str] = []
+    for label, uri in candidates:
+        loaded, err = _try_load(uri)
+        if loaded is not None:
+            model = loaded
+            expected_cols = _infer_expected_cols(loaded)
+            model_uri_cached = uri
+            last_error = None
+            print(f"[Model] Loaded v{model_version} from {label}: {uri} "
+                  f"(expected_cols={'known' if expected_cols else 'unknown'})")
+            return
+        else:
+            last_errs.append(f"{label}: {err}")
 
-    try:
-        model_name = "airbnb_occupancy_model_prod"
-        alias = "champion"
-
-        mlflow.set_tracking_uri('http://mlflow:5000')
-        client = mlflow.MlflowClient()
-
-        # Check in the model registry if the version of the champion has changed
-        new_model_data = client.get_model_version_by_alias(model_name, alias)
-        new_version_model = int(new_model_data.version)
-
-        # If the versions are not the same
-        if new_version_model != version_model:
-            # Load the new model and update version and data dictionary
-            model, version_model, data_dict = load_model(model_name, alias)
-            print(f"Model updated to version {version_model}")
-
-    except Exception as e:
-        # If an error occurs during the process, log it but don't crash
-        print(f"Error checking model updates: {e}")
-        pass
- 
-
-class AirbnbFeatures(BaseModel):
-    """
-    Input schema for Airbnb property features based on training data ranges and categories
-    """
-    
-    # Geographic coordinates (Buenos Aires area)
-    latitude: float = Field(
-        description="Latitude coordinate", 
-        ge=-34.68, 
-        le=-34.53,
-        example=-34.6037
-    )
-    longitude: float = Field(
-        description="Longitude coordinate", 
-        ge=-58.53, 
-        le=-58.36,
-        example=-58.3816
-    )
-    
-    # Property characteristics
-    property_type: PropertyType = Field(
-        description="Type of property",
-        example="Entire rental unit"
-    )
-    room_type: RoomType = Field(
-        description="Type of room",
-        example="Entire home/apt"
-    )
-    
-    # Capacity and space
-    accommodates: int = Field(
-        description="Number of guests the property accommodates", 
-        ge=1, 
-        le=10,
-        example=4
-    )
-    bedrooms: float = Field(
-        description="Number of bedrooms", 
-        ge=0.0, 
-        le=10.0,
-        example=2.0
-    )
-    beds: float = Field(
-        description="Number of beds", 
-        ge=0.0, 
-        le=10.0,
-        example=2.0
-    )
-    
-    # Pricing and booking policies
-    price: float = Field(
-        description="Price per night in USD", 
-        ge=0.23, 
-        le=90927.88,
-        example=150.0
-    )
-    minimum_nights: int = Field(
-        description="Minimum number of nights required", 
-        ge=1, 
-        le=730,
-        example=2
-    )
-    maximum_nights: int = Field(
-        description="Maximum number of nights allowed", 
-        ge=1, 
-        le=99999,
-        example=30
-    )
-    
-    # Reviews and ratings
-    number_of_reviews: int = Field(
-        description="Total number of reviews", 
-        ge=0, 
-        le=992,
-        example=45
-    )
-    review_scores_rating: float = Field(
-        description="Overall review score rating", 
-        ge=0.0, 
-        le=5.0,
-        example=4.8
-    )
-    review_scores_accuracy: float = Field(
-        description="Review score for accuracy", 
-        ge=0.0, 
-        le=5.0,
-        example=4.9
-    )
-    review_scores_cleanliness: float = Field(
-        description="Review score for cleanliness", 
-        ge=0.0, 
-        le=5.0,
-        example=4.7
-    )
-    review_scores_checkin: float = Field(
-        description="Review score for check-in process", 
-        ge=0.0, 
-        le=5.0,
-        example=4.8
-    )
-    review_scores_communication: float = Field(
-        description="Review score for communication", 
-        ge=1.0, 
-        le=5.0,
-        example=4.9
-    )
-    review_scores_location: float = Field(
-        description="Review score for location", 
-        ge=1.0, 
-        le=5.0,
-        example=4.6
-    )
-    review_scores_value: float = Field(
-        description="Review score for value", 
-        ge=1.0, 
-        le=5.0,
-        example=4.5
-    )
-    
-    # Host information
-    host_listings_count: float = Field(
-        description="Number of listings the host has", 
-        ge=1.0, 
-        le=670.0,
-        example=3.0
-    )
-    host_total_listings_count: float = Field(
-        description="Total number of listings the host has ever had", 
-        ge=1.0, 
-        le=2542.0,
-        example=3.0
-    )
-    
-    # Binary features
-    instant_bookable: int = Field(
-        description="Whether the property is instantly bookable (0=No, 1=Yes)", 
-        ge=0, 
-        le=1,
-        example=1
-    )
-    host_is_superhost: int = Field(
-        description="Whether the host is a superhost (0=No, 1=Yes)", 
-        ge=0, 
-        le=1,
-        example=0
-    )
-    
-    # Location
-    city: City = Field(
-        description="City where the property is located",
-        example="Buenos Aires"
-    )
-
-    model_config = {
-        "json_schema_extra": {
-            "examples": [
-                {
-                    "latitude": -34.6037,
-                    "longitude": -58.3816,
-                    "property_type": "Entire rental unit",
-                    "room_type": "Entire home/apt",
-                    "accommodates": 4,
-                    "bedrooms": 2.0,
-                    "beds": 2.0,
-                    "price": 150.0,
-                    "minimum_nights": 2,
-                    "maximum_nights": 30,
-                    "number_of_reviews": 45,
-                    "review_scores_rating": 4.8,
-                    "review_scores_accuracy": 4.9,
-                    "review_scores_cleanliness": 4.7,
-                    "review_scores_checkin": 4.8,
-                    "review_scores_communication": 4.9,
-                    "review_scores_location": 4.6,
-                    "review_scores_value": 4.5,
-                    "instant_bookable": 1,
-                    "host_is_superhost": 0,
-                    "host_listings_count": 3.0,
-                    "host_total_listings_count": 3.0,
-                    "city": "Buenos Aires"
-                }
-            ]
-        }
-    }
+    # If we got here, all attempts failed
+    model = None
+    model_version = None
+    model_uri_cached = None
+    expected_cols = None
+    last_error = " | ".join(last_errs)
+    print(f"[Model] Registry load failed or artifacts unreachable: {last_error}")
 
 
-class ModelInput(BaseModel):
-    """
-    Input schema for the Airbnb occupancy prediction model.
-
-    This class defines the input structure that accepts Airbnb property features.
-    """
-
-    features: List[AirbnbFeatures] = Field(
-        description="List of Airbnb property features for prediction",
-        min_length=1,
-        max_length=1,
-    )
-
-
-class ModelOutput(BaseModel):
-    """
-    Output schema for the Airbnb occupancy prediction model.
-
-    This class defines the output fields returned by the occupancy prediction model.
-    
-    :param prediction: Prediction for the property. 1 for high occupancy, 0 for low occupancy.
-    :param occupancy_level: Descriptive label for the occupancy prediction.
-    """
-
-    prediction: int = Field(
-        description="Prediction for the property. 1 for high occupancy, 0 for low occupancy",
-        ge=0,
-        le=1,
-    )
-    occupancy_level: str = Field(
-        description="Descriptive label for the occupancy level",
-        examples=["Low Occupancy", "High Occupancy"]
-    )
-
-    model_config = {
-        "json_schema_extra": {
-            "examples": [
-                {
-                    "prediction": 1
-                }
-            ]
-        }
-    }
-
-
-# Load the model before start
+# ---------------------------------
+# Startup: try to load the model
+# ---------------------------------
 print("Starting model loading...")
-model, version_model, data_dict = load_model("airbnb_occupancy_model_prod", "champion")
-print("Model loading completed!")
+load_model()
 
-app = FastAPI()
-
-
-@app.get("/")
-async def read_root():
-    """
-    Root endpoint of the Airbnb Occupancy Prediction API.
-
-    This endpoint returns a JSON response with a welcome message to indicate that the API is running.
-    """
-    return JSONResponse(content=jsonable_encoder({"message": "Welcome to the Airbnb Occupancy Prediction API for Buenos Aires"}))
+# -------------------------------
+# Schemas & endpoints
+# -------------------------------
+class PredictRecords(BaseModel):
+    """Accept a list of records (dicts) to predict."""
+    records: List[Dict[str, Any]] = Field(..., description="Array of feature dicts")
 
 
-@app.post("/predict/", response_model=ModelOutput)
-def predict(
-    input_data: ModelInput,
-    background_tasks: BackgroundTasks
-):
-    """
-    Endpoint for predicting Airbnb occupancy in Buenos Aires.
+@app.get("/health")
+def health():
+    return {
+        "status": "ok",
+        "model_available": model is not None,
+        "model_name": MODEL_NAME,
+        "alias": MODEL_ALIAS,
+        "model_version": model_version,
+    }
 
-    This endpoint receives features related to an Airbnb property and predicts whether the property 
-    will have high occupancy (1) or low occupancy (0) using a trained model.
-    """
+
+@app.get("/model/status")
+def model_status():
+    if model is None:
+        msg = "No trained model published yet or artifacts not reachable."
+        if last_error:
+            msg += f" Last error: {last_error}"
+        return {"available": False, "message": msg}
+    return {
+        "available": True,
+        "name": MODEL_NAME,
+        "alias": MODEL_ALIAS,
+        "version": model_version,
+        "expected_cols_known": expected_cols is not None,
+    }
+
+
+@app.post("/model/reload")
+def model_reload():
+    load_model()
+    if model is None:
+        raise HTTPException(status_code=503, detail=f"reload failed: {last_error or 'unknown error'}")
+    return {"reloaded": True, "version": model_version}
+
+
+@app.post("/predict")
+def predict(payload: PredictRecords):
+    if model is None:
+        raise HTTPException(
+            status_code=503,
+            detail="No trained model available yet. Run training to publish a 'champion' in MLflow.",
+        )
+
+    df = pd.DataFrame(payload.records)
+    X, ids = _prepare_features(df, id_col="listing_id")
 
     try:
-        # Get the single property from the input (only one property allowed)
-        property_features = input_data.features[0]
-        
-        # Extract features from the request and convert them into a DataFrame
-        features_dict = property_features.dict()
-        
-        # Create DataFrame with the correct column order
-        features_df = pd.DataFrame([features_dict])
-        
-        # Ensure column order matches training data
-        if "columns" in data_dict:
-            # Reorder columns to match training data
-            features_df = features_df[data_dict["columns"]]
-        
-        # Make the prediction using the trained model (preprocessing is handled by the pipeline)
-        prediction = model.predict(features_df)
-        
-        # Determine occupancy level description
-        prediction_value = int(prediction[0])
-        occupancy_level = "High Occupancy" if prediction_value == 1 else "Low Occupancy"
-
-        # Check if the model has changed asynchronously
-        background_tasks.add_task(check_model)
-
-        # Return the prediction result
-        return ModelOutput(prediction=prediction_value, occupancy_level=occupancy_level)
-        
+        if hasattr(model, "predict_proba"):
+            proba = model.predict_proba(X)[:, 1]
+            pred = (proba >= 0.5).astype(int)
+            out = pd.DataFrame({"listing_id": ids, "prediction": pred, "score": proba})
+        else:
+            pred = model.predict(X)
+            out = pd.DataFrame({"listing_id": ids, "prediction": pred})
     except Exception as e:
-        print(f"Prediction error: {e}")
-        # Return a default prediction in case of error
-        return ModelOutput(prediction=0, occupancy_level="Low Occupancy")
- 
+        raise HTTPException(status_code=400, detail=f"prediction failed: {e}")
+
+    return {"count": len(out), "results": json.loads(out.to_json(orient="records"))}

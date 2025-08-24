@@ -95,6 +95,10 @@ def process_etl_airbnb_data():
         data = wr.s3.read_csv(data_original_path)
         df = data.copy()
 
+        # keep id as listing_id for inference/UX
+        if "id" in df.columns and "listing_id" not in df.columns:
+            df = df.rename(columns={"id": "listing_id"})
+
         # Get scraping date
         date = data['last_scraped'][0]
 
@@ -230,65 +234,74 @@ def process_etl_airbnb_data():
                      index=False)
 
         # Save dataset info to S3
-        client = boto3.client('s3')
-
-        data_dict = {}
+        client = boto3.client("s3")
         try:
-            client.head_object(Bucket='data', Key='data_info/data.json')
-            result = client.get_object(Bucket='data', Key='data_info/data.json')
+            client.head_object(Bucket="data", Key="data_info/data.json")
+            result = client.get_object(Bucket="data", Key="data_info/data.json")
             text = result["Body"].read().decode()
             data_dict = json.loads(text)
         except botocore.exceptions.ClientError as e:
-            if e.response['Error']['Code'] != "404":
+            if e.response["Error"]["Code"] == "404":
+                data_dict = {}
+            else:
                 raise e
+
         variables = get_variables_from_yaml()
         target_col = variables["target_col"]
-        dataset_log = df.drop(columns=target_col)
+        feature_cols = variables["feature_cols"]
 
-        # Update JSON with dataset information
-        data_dict['columns'] = dataset_log.columns.to_list()
-        data_dict['target_col'] = target_col
-        data_dict['categorical_columns'] = df.select_dtypes(include=["object", "string"]).columns.tolist()
-        data_dict['columns_dtypes'] = {k: str(v) for k, v in dataset_log.dtypes.to_dict().items()}
+        # For logging purposes (everything except the target column)
+        dataset_log = df.drop(columns=[target_col], errors="ignore")
 
+        data_dict["columns"] = dataset_log.columns.to_list()
+        data_dict["target_col"] = target_col
+        data_dict["categorical_columns"] = df.select_dtypes(include=["object", "string"]).columns.tolist()
+        data_dict["columns_dtypes"] = {k: str(v) for k, v in dataset_log.dtypes.to_dict().items()}
+
+        # keys for inference/UX
+        data_dict["id_column"] = "listing_id"
+        data_dict["lat_column"] = "latitude"
+        data_dict["lon_column"] = "longitude"
+        data_dict["feature_cols_raw"] = feature_cols  # before encoding
+
+        # Unique values of categorical features (for input validation if needed)
         category_dummies_dict = {}
-        for category in data_dict['categorical_columns']:
+        for category in data_dict["categorical_columns"]:
             if category in dataset_log.columns:
                 try:
-                    unique_values = dataset_log[category].unique()
+                    unique_values = dataset_log[category].dropna().unique()
                     category_dummies_dict[category] = np.sort(unique_values).tolist()
                 except TypeError:
-                    print(f"Skipping column '{category}' as it contains unhashable types (likely lists)")
+                    # Skip columns with unhashable types (likely lists)
                     continue
+        data_dict["categories_values_per_categorical"] = category_dummies_dict
 
-        data_dict['categories_values_per_categorical'] = category_dummies_dict
-        data_dict['date'] = datetime.datetime.today().strftime('%Y/%m/%d-%H:%M:%S"')
+        data_dict["date"] = datetime.datetime.today().strftime('%Y/%m/%d-%H:%M:%S"')
         data_string = json.dumps(data_dict, indent=2)
+        client.put_object(Bucket="data", Key="data_info/data.json", Body=data_string)
 
-        client.put_object(
-            Bucket='data',
-            Key='data_info/data.json',
-            Body=data_string
-        )
-
-        # Track dataset in MLflow
-        mlflow.set_tracking_uri('http://mlflow:5000')
+        # ------- MLflow dataset tracking -------
+        mlflow.set_tracking_uri("http://mlflow:5000")
         experiment = mlflow.set_experiment("Airbnb Buenos Aires")
-
-        mlflow.start_run(run_name='ETL_run_' + datetime.datetime.today().strftime('%Y/%m/%d-%H:%M:%S"'),
-                         experiment_id=experiment.experiment_id,
-                         tags={"experiment": "etl", "dataset": "Airbnb Buenos Aires"},
-                         log_system_metrics=True)
-
-        mlflow_dataset = mlflow.data.from_pandas(data,
-                                                 source="https://data.insideairbnb.com/argentina/ciudad-aut%C3%B3noma-de-buenos-aires/buenos-aires/2025-01-29/data/listings.csv.gz",
-                                                 name="airbnb_data_complete")
-        mlflow_dataset_dummies = mlflow.data.from_pandas(df,
-                                                         source="https://data.insideairbnb.com/argentina/ciudad-aut%C3%B3noma-de-buenos-aires/buenos-aires/2025-01-29/data/listings.csv.gz",
-                                                         targets=target_col,
-                                                         name="airbnb_data_preprocessed")
+        mlflow.start_run(
+            run_name='ETL_run_' + datetime.datetime.today().strftime('%Y/%m/%d-%H:%M:%S"'),
+            experiment_id=experiment.experiment_id,
+            tags={"experiment": "etl", "dataset": "Airbnb Buenos Aires"},
+            log_system_metrics=True,
+        )
+        mlflow_dataset = mlflow.data.from_pandas(
+            data,
+            source="https://data.insideairbnb.com/argentina/ciudad-aut%C3%B3noma-de-buenos-aires/buenos-aires/2025-01-29/data/listings.csv.gz",
+            name="airbnb_data_complete",
+        )
+        mlflow_dataset_prep = mlflow.data.from_pandas(
+            df,
+            source="https://data.insideairbnb.com/argentina/ciudad-aut%C3%B3noma-de-buenos-aires/buenos-aires/2025-01-29/data/listings.csv.gz",
+            targets=target_col,
+            name="airbnb_data_preprocessed",
+        )
         mlflow.log_input(mlflow_dataset, context="Dataset")
-        mlflow.log_input(mlflow_dataset_dummies, context="Dataset")
+        mlflow.log_input(mlflow_dataset_prep, context="Dataset")
 
     @task(
         task_id="split_dataset"
@@ -298,38 +311,50 @@ def process_etl_airbnb_data():
         Split dataset into train and test sets.
         """
         import awswrangler as wr
-        import json
         from sklearn.model_selection import train_test_split
-        from airflow.models import Variable
-
         from utils.utils_etl import get_variables_from_yaml
+        import pandas as pd
 
         def save_to_csv(df, path):
-            wr.s3.to_csv(df=df,
-                         path=path,
-                         index=False)
+            wr.s3.to_csv(df=df, path=path, index=False)
 
+        # Load preprocessed data
         data_original_path = "s3://data/raw/airbnb_preprocessed.csv"
         dataset = wr.s3.read_csv(data_original_path)
 
-        # Load variables from YAML
-        variables = get_variables_from_yaml()
-        test_size = variables["test_size"]
-        target_col = variables["target_col"]
-        feature_cols = variables["feature_cols"]
+        # Ensure listing_id exists (raw column was 'id')
+        if "listing_id" not in dataset.columns and "id" in dataset.columns:
+            dataset = dataset.rename(columns={"id": "listing_id"})
 
-        X = dataset[feature_cols]
-        y = dataset[[target_col]]
+        # Load variables
+        variables   = get_variables_from_yaml()
+        test_size   = variables["test_size"]
+        target_col  = variables["target_col"]
+        feature_cols= variables["feature_cols"]
 
-        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=test_size, stratify=y)
+        # Drop duplicates BEFORE the split (optional: by listing_id if present)
+        if "listing_id" in dataset.columns:
+            dataset = dataset.drop_duplicates(subset=["listing_id"]).reset_index(drop=True)
+        else:
+            dataset = dataset.drop_duplicates().reset_index(drop=True)
 
-        # Drop duplicates
-        dataset.drop_duplicates(inplace=True, ignore_index=True)
+        # Build X with listing_id as first column
+        cols_for_X = (["listing_id"] if "listing_id" in dataset.columns else []) + feature_cols
+        X = dataset[cols_for_X].copy()
 
+        # y as a Series (not DataFrame) for stratify
+        y = dataset[target_col].astype(int)
+
+        # Split (stratified & reproducible)
+        X_train, X_test, y_train, y_test = train_test_split(
+            X, y, test_size=test_size, stratify=y, random_state=42, shuffle=True
+        )
+
+        # Save
         save_to_csv(X_train, "s3://data/final/train/airbnb_X_train.csv")
-        save_to_csv(X_test, "s3://data/final/test/airbnb_X_test.csv")
-        save_to_csv(y_train, "s3://data/final/train/airbnb_y_train.csv")
-        save_to_csv(y_test, "s3://data/final/test/airbnb_y_test.csv")
+        save_to_csv(X_test,  "s3://data/final/test/airbnb_X_test.csv")
+        save_to_csv(pd.DataFrame({target_col: y_train}), "s3://data/final/train/airbnb_y_train.csv")
+        save_to_csv(pd.DataFrame({target_col: y_test}),  "s3://data/final/test/airbnb_y_test.csv")
 
     @task(
         task_id="encode_normalize_features"
@@ -337,77 +362,86 @@ def process_etl_airbnb_data():
     def encode_normalize_features():
         """
         Encode categorical features and normalize numeric features.
+        Keep `listing_id` column for traceability.
         Save preprocessor and transformed data.
         """
-        from airflow.models import Variable
-
         import json
         import mlflow
         import boto3
         import botocore.exceptions
-
         import awswrangler as wr
         import pandas as pd
 
         from sklearn.preprocessing import StandardScaler, OneHotEncoder
         from sklearn.compose import ColumnTransformer
-        from imblearn.over_sampling import RandomOverSampler
         import mlflow.sklearn
 
         from utils.utils_etl import get_variables_from_yaml
         from utils.plots import plot_correlation_with_target, plot_information_gain_with_target, plot_class_balance
 
         def save_to_csv(df, path):
-            wr.s3.to_csv(df=df,
-                         path=path,
-                         index=False)
+            wr.s3.to_csv(df=df, path=path, index=False)
         
         def create_plots(X, y):
-            # Plot correlation and information gain with target
             target_column = y.columns[0]
             correlation_plot = plot_correlation_with_target(X, y, target_col=target_column)
             information_gain_plot = plot_information_gain_with_target(X, y, target_col=target_column)
             class_balance_plot = plot_class_balance(y, target_col=target_column)
+            return {
+                "correlation_plot": correlation_plot, 
+                "information_gain_plot": information_gain_plot, 
+                "class_balance_plot": class_balance_plot
+            }
 
-            return {"correlation_plot": correlation_plot, "information_gain_plot": information_gain_plot, "class_balance_plot": class_balance_plot}
-
+        # === Load datasets (with listing_id preserved) ===
         X_train = wr.s3.read_csv("s3://data/final/train/airbnb_X_train.csv")
         y_train = wr.s3.read_csv("s3://data/final/train/airbnb_y_train.csv")
-        X_test = wr.s3.read_csv("s3://data/final/test/airbnb_X_test.csv")
+        X_test  = wr.s3.read_csv("s3://data/final/test/airbnb_X_test.csv")
 
-        # Load variables from YAML
+        # Save id before preprocessing
+        id_train = X_train["listing_id"] if "listing_id" in X_train.columns else None
+        id_test  = X_test["listing_id"] if "listing_id" in X_test.columns else None
+
+        # Drop id from feature set if present
+        if id_train is not None:
+            X_train = X_train.drop(columns=["listing_id"])
+            X_test  = X_test.drop(columns=["listing_id"])
+
+        # === Preprocess ===
         variables = get_variables_from_yaml()
         cat_cols = variables["cat_cols"]
         num_cols = [col for col in X_train.columns if col not in cat_cols]
 
-        # Preprocessor
         preprocessor = ColumnTransformer(transformers=[
             ('num', StandardScaler(), num_cols),
             ('cat', OneHotEncoder(drop='first', sparse_output=False, handle_unknown='ignore'), cat_cols)
         ])
 
         X_train_arr = preprocessor.fit_transform(X_train)
-        X_test_arr = preprocessor.transform(X_test)
+        X_test_arr  = preprocessor.transform(X_test)
 
-        # Get feature names after transformation
         num_feature_names = num_cols
         cat_feature_names = preprocessor.named_transformers_['cat'].get_feature_names_out(cat_cols)
         all_feature_names = list(num_feature_names) + list(cat_feature_names)
 
-        X_train = pd.DataFrame(X_train_arr, columns=all_feature_names)
-        X_test = pd.DataFrame(X_test_arr, columns=all_feature_names)
+        X_train_proc = pd.DataFrame(X_train_arr, columns=all_feature_names)
+        X_test_proc  = pd.DataFrame(X_test_arr, columns=all_feature_names)
 
-        # Load plots
-        plots = create_plots(X_train, y_train)
+        # Re-attach listing_id if it exists
+        if id_train is not None:
+            X_train_proc.insert(0, "listing_id", id_train.values)
+            X_test_proc.insert(0, "listing_id", id_test.values)
 
-        # Save transformed datasets
-        save_to_csv(X_train, "s3://data/final/train/airbnb_X_train.csv")
+        # === Plots ===
+        plots = create_plots(X_train_proc.drop(columns=["listing_id"], errors="ignore"), y_train)
+
+        # === Save transformed datasets ===
+        save_to_csv(X_train_proc, "s3://data/final/train/airbnb_X_train.csv")
         save_to_csv(y_train, "s3://data/final/train/airbnb_y_train.csv")
-        save_to_csv(X_test, "s3://data/final/test/airbnb_X_test.csv")
+        save_to_csv(X_test_proc,  "s3://data/final/test/airbnb_X_test.csv")
 
-        # Save dataset metadata to S3
+        # === Save dataset metadata ===
         client = boto3.client('s3')
-
         try:
             client.head_object(Bucket='data', Key='data_info/data.json')
             result = client.get_object(Bucket='data', Key='data_info/data.json')
@@ -417,30 +451,25 @@ def process_etl_airbnb_data():
             raise e
 
         data_dict['standard_scaler_mean'] = preprocessor.named_transformers_['num'].mean_.tolist()
-        data_dict['standard_scaler_std'] = preprocessor.named_transformers_['num'].scale_.tolist()
+        data_dict['standard_scaler_std']  = preprocessor.named_transformers_['num'].scale_.tolist()
         data_string = json.dumps(data_dict, indent=2)
 
-        client.put_object(
-            Bucket='data',
-            Key='data_info/data.json',
-            Body=data_string
-        )
+        client.put_object(Bucket='data', Key='data_info/data.json', Body=data_string)
 
+        # === Track in MLflow ===
         mlflow.set_tracking_uri('http://mlflow:5000')
         experiment = mlflow.set_experiment("Airbnb Buenos Aires")
 
         list_run = mlflow.search_runs([experiment.experiment_id], output_format="list")
-
         with mlflow.start_run(run_id=list_run[0].info.run_id):
             mlflow.sklearn.log_model(preprocessor, artifact_path="preprocessor")
-            mlflow.log_param("Train observations", X_train.shape[0])
-            mlflow.log_param("Test observations", X_test.shape[0])
+            mlflow.log_param("Train observations", X_train_proc.shape[0])
+            mlflow.log_param("Test observations", X_test_proc.shape[0])
             mlflow.log_param("Standard Scaler feature names", preprocessor.named_transformers_['num'].feature_names_in_)
             mlflow.log_param("One Hot Encoder feature names", preprocessor.named_transformers_['cat'].get_feature_names_out())
-            mlflow.log_param("Standard Scaler mean values",preprocessor.named_transformers_['num'].scale_)
+            mlflow.log_param("Standard Scaler mean values", preprocessor.named_transformers_['num'].scale_)
             mlflow.log_param("One Hot Encoder categories", preprocessor.named_transformers_['cat'].categories_)
 
-            # Log plots as artifacts
             for plot_name, plot_fig in plots.items():
                 mlflow.log_figure(plot_fig, f"feature_evaluation_plots/{plot_name}.png")
 

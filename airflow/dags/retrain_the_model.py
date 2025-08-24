@@ -59,6 +59,7 @@ def processing_dag():
         from utils.plots import plot_feature_importance, plot_calibration_curve
         from utils.metrics import performance_report
         from utils.optuna_aux import champion_callback, objective
+        from utils.utils_etl import get_variables_from_yaml
 
         from imblearn.pipeline import Pipeline
         from imblearn.over_sampling import SMOTE
@@ -68,15 +69,17 @@ def processing_dag():
         MODEL_REG_NAME = "airbnb_model_prod"
 
         def load_train_data():
-            X_train = wr.s3.read_csv("s3://data/final/train/airbnb_X_train.csv")
+            import awswrangler as wr, os
+            wr.config.s3_endpoint_url = os.getenv("MLFLOW_S3_ENDPOINT_URL", "http://s3:9000")
+            X_train = wr.s3.read_csv("s3://data/final/train/airbnb_X_train.csv").drop(columns=["listing_id"])
             y_train = wr.s3.read_csv("s3://data/final/train/airbnb_y_train.csv")
-
             return X_train, y_train
-        
-        def load_test_data():
-            X_test = wr.s3.read_csv("s3://data/final/test/airbnb_X_test.csv")
-            y_test = wr.s3.read_csv("s3://data/final/test/airbnb_y_test.csv")
 
+        def load_test_data():
+            import awswrangler as wr, os
+            wr.config.s3_endpoint_url = os.getenv("MLFLOW_S3_ENDPOINT_URL", "http://s3:9000")
+            X_test = wr.s3.read_csv("s3://data/final/test/airbnb_X_test.csv").drop(columns=["listing_id"])
+            y_test = wr.s3.read_csv("s3://data/final/test/airbnb_y_test.csv")
             return X_test, y_test
 
         def champion_exists(client, name):
@@ -117,138 +120,163 @@ def processing_dag():
             train_metrics = {f"train_{k}": float(v) for k, v in summary_train.iloc[0].items()}
             test_metrics  = {f"test_{k}":  float(v) for k, v in summary_test.iloc[0].items()}
 
-            # Log metrics
             for metric, value in train_metrics.items():
                 mlflow.log_metric(metric, value)
-
             for metric, value in test_metrics.items():
                 mlflow.log_metric(metric, value)
 
+            os.makedirs('./artifacts', exist_ok=True)
             out_deciles_test.to_html('./artifacts/performance_table.html')
             mlflow.log_artifact('./artifacts/performance_table.html')
 
-            # Feature importance
-            fig, imp = plot_feature_importance(model, X_train.columns, kind="auto", n_top=20, save_path='./artifacts/feature_importance.png')
+            fig, imp = plot_feature_importance(model, X_train.columns, X=X_train, y=y_train, kind="auto", n_top=20, save_path='./artifacts/feature_importance.png')
             mlflow.log_artifact('./artifacts/feature_importance.png')
 
-            # Calibration plot
             calibration_fig = plot_calibration_curve(y_train.values.ravel(), y_train_proba, save_path='./artifacts/calibration_curve_train.png')
             mlflow.log_artifact('./artifacts/calibration_curve_train.png')
 
             calibration_fig = plot_calibration_curve(y_test.values.ravel(), y_test_proba, save_path='./artifacts/calibration_curve_test.png')
             mlflow.log_artifact('./artifacts/calibration_curve_test.png')
 
-            # Save the artifact of the challenger model
-            artifact_path = "model"
-
             signature = infer_signature(X_test, model.predict(X_test))
-
             mlflow.sklearn.log_model(
                 sk_model=model,
-                name=artifact_path,
+                artifact_path="model",
                 signature=signature,
-                serialization_format='cloudpickle',
-                registered_model_name="airbnb_model_prod",
-                metadata={"model_data_version": 1}
+                serialization_format="cloudpickle",
+                metadata={"model_data_version": 1},
             )
 
-            return summary_test['auc']
+            return float(summary_test.iloc[0]["auc"])
 
         def mlflow_track_experiment(model, X_train, y_train, X_test, y_test):
-            # Track the experiment
             experiment = mlflow.set_experiment("Airbnb Buenos Aires")
 
-            # Create the directory if it doesn't exist
-            os.makedirs('./artifacts', exist_ok=True)
+            with mlflow.start_run(
+                run_name='Challenger_run_' + datetime.datetime.today().strftime('%Y/%m/%d-%H:%M:%S'),
+                experiment_id=experiment.experiment_id,
+                tags={"experiment": "challenger models", "dataset": "Airbnb"},
+                log_system_metrics=True
+            ) as run:
+                params = model.get_params()
+                params["model"] = type(model).__name__
+                mlflow.log_params(params)
 
-            mlflow.start_run(run_name='Challenger_run_' + datetime.datetime.today().strftime('%Y/%m/%d-%H:%M:%S'),
-                             experiment_id=experiment.experiment_id,
-                             tags={"experiment": "challenger models", "dataset": "Airbnb"},
-                             log_system_metrics=True)
+                auc = load_mlflow(model, X_train, y_train, X_test, y_test)
 
-            # Log model parameters
-            params = model.get_params()
-            params["model"] = type(model).__name__
+                run_id = run.info.run_id      
 
-            mlflow.log_params(params)
-
-            # Load MLflow metrics
-            roc_auc_score_value = load_mlflow(model, X_train, y_train, X_test, y_test)
-
-            run = mlflow.active_run()
-            run_id = run.info.run_id
-
-            return run_id, roc_auc_score_value
+            return run_id, auc
         
         def create_initial_model():
-
-            # Track the experiment
             experiment = mlflow.set_experiment("Airbnb Buenos Aires")
 
-            # Create the directory if it doesn't exist
             os.makedirs('./artifacts', exist_ok=True)
 
-            mlflow.start_run(run_name="best_hyperparam_"  + datetime.datetime.today().strftime('%Y/%m/%d-%H:%M:%S'),
-                             experiment_id=experiment.experiment_id,
-                             nested=True,
-                             tags={"experiment": "optuna tuning", "dataset": "Airbnb"},
-                             log_system_metrics=True)
+            # Run Optuna search
+            with mlflow.start_run(
+                run_name="best_hyperparam_" + datetime.datetime.today().strftime('%Y/%m/%d-%H:%M:%S'),
+                experiment_id=experiment.experiment_id,
+                tags={"experiment": "optuna tuning", "dataset": "Airbnb"},
+                log_system_metrics=True
+            ) as run:
+
+                study = optuna.create_study(direction="maximize")
+                study.set_user_attr("winner", None)
+
+                study.optimize(
+                    lambda trial: objective(trial, X_train, y_train, experiment.experiment_id),
+                    n_trials=10,
+                    callbacks=[champion_callback]
+                )
+
+                # Log best params
+                mlflow.log_params(study.best_params)
+
+                # Train model with best params
+                model = RandomForestClassifier(**study.best_params, n_jobs=-1, random_state=42)
+                model.fit(X_train, y_train.to_numpy().ravel())
+
+                auc = load_mlflow(model, X_train, y_train, X_test, y_test)
+
+                run_id = run.info.run_id
+
+            return model, run_id, auc
         
-            # Define the objective function for Optuna
-            study = optuna.create_study(direction="maximize")
-            study.set_user_attr("winner", None)
-            study.optimize(lambda trial: objective(trial, X_train, y_train, experiment.experiment_id), n_trials=10, callbacks=[champion_callback])
+        def register(run_id: str,
+                    alias: str,
+                    name: str = "airbnb_model_prod",
+                    extra_tags: dict | None = None,
+                    create_if_missing: bool = False) -> int:
+            """
+            Set an alias on an existing ModelVersion produced by `run_id` WITHOUT creating
+            a new version if one already exists.
 
-            # Save the best parameters
-            mlflow.log_params(study.best_params)
+            Workflow:
+            - Look for ModelVersions in the registry `name` that were logged with the given run_id.
+            - If found:
+                - Use the most recent version and only update the alias.
+            - If not found:
+                - If create_if_missing=True -> create a new ModelVersion from runs:/{run_id}/model
+                - If create_if_missing=False -> raise ValueError
+            Returns the version number used.
+            """
+            import mlflow
+            from mlflow.exceptions import MlflowException
 
-            # Define the model based on the best parameters
-            model = RandomForestClassifier(**study.best_params, n_jobs=-1, random_state=42)
+            mlflow.set_tracking_uri("http://mlflow:5000")
+            c = mlflow.MlflowClient()
 
-            model = model.fit(X_train, y_train.to_numpy().ravel())
+            # 1) Look up if a ModelVersion already exists for this run_id
+            existing = [
+                mv for mv in c.search_model_versions(f"name = '{name}'")
+                if mv.run_id == run_id
+            ]
+            if existing:
+                # If there are multiple, take the most recent one
+                existing.sort(key=lambda mv: int(mv.version), reverse=True)
+                version_to_use = int(existing[0].version)
+            else:
+                if not create_if_missing:
+                    raise ValueError(
+                        f"No ModelVersion found for run_id={run_id} in '{name}'. "
+                        f"Log the model with registered_model_name or call with create_if_missing=True."
+                    )
+                # 2) Create a new ModelVersion only if explicitly allowed
+                source_uri = f"runs:/{run_id}/model"
+                tags = {}
+                if extra_tags:
+                    tags.update({k: str(v) for k, v in extra_tags.items()})
+                # Ensure the RegisteredModel exists
+                try:
+                    c.get_registered_model(name)
+                except MlflowException:
+                    c.create_registered_model(name)
+                mv = c.create_model_version(name=name, source=source_uri, run_id=run_id, tags=tags)
+                version_to_use = int(mv.version)
 
-            # Load MLflow metrics
-            roc_auc_score_value = load_mlflow(model, X_train, y_train, X_test, y_test)
+            # 3) Set the alias (delete it first if it already exists, then reassign)
+            try:
+                c.set_registered_model_alias(name, alias, version_to_use)
+            except MlflowException:
+                try:
+                    c.delete_registered_model_alias(name, alias)
+                except MlflowException:
+                    pass
+                c.set_registered_model_alias(name, alias, version_to_use)
 
-            run = mlflow.active_run()
-            run_id = run.info.run_id
+            return version_to_use
 
-            return model, run_id, roc_auc_score_value
-        
-        def register(model, roc_auc_score_value, run_id, alias = "challenger"):
-            client = mlflow.MlflowClient()
-            name = "airbnb_model_prod"
-
-            # Save the model params as tags
-            tags = model.get_params()
-            tags["model"] = type(model).__name__
-            tags["auc"] = str(roc_auc_score_value)
-
-            # Save the version of the model
-            result = client.create_model_version(
-                name=name,
-                source=f"runs:/{run_id}/model",
-                run_id=run_id,
-                tags=tags
-            )
-
-            # Save the alias
-            client.set_registered_model_alias(name, alias, result.version)
-
-        # Load the dataset
+        # Load data
         X_train, y_train = load_train_data()
         X_test, y_test = load_test_data()
 
-        # Initialize MLflow client
         client = mlflow.MlflowClient()
 
         if champion_exists(client, MODEL_REG_NAME):
             print("Champion model exists. Training challenger...")
 
-            # Load the champion model
             champion_model = load_the_champion_model()
-            
-            # Clone the champion model to create a challenger
             challenger_model = clone(champion_model)
 
             pipe = Pipeline(
@@ -257,25 +285,33 @@ def processing_dag():
                     ("clf", challenger_model),
                 ]
             )
-
-            # Fit the training model
             pipe.fit(X_train, y_train.to_numpy().ravel())
 
-            # MLFlow track experiment
-            run_id, roc_auc_score_value = mlflow_track_experiment(pipe, X_train, y_train, X_test, y_test)
+            run_id, auc = mlflow_track_experiment(pipe, X_train, y_train, X_test, y_test)
 
-            # Register the challenger model
-            register(challenger_model, roc_auc_score_value, run_id, alias="challenger")
+            # Optional extra tags
+            extra = {"model": type(challenger_model).__name__}
+            _ = register(
+                    run_id=run_id,
+                    alias="challenger",
+                    name=MODEL_REG_NAME,
+                    extra_tags={**(extra or {}), "auc": auc},
+                    create_if_missing=True
+                )
 
         else:
             print("No champion model found. Training initial model...")
-            # Create the initial model
-            model, run_id, roc_auc_score_value = create_initial_model()
+            model, run_id, auc = create_initial_model()
+            extra = {"model": type(model).__name__}
+            _ = register(
+                    run_id=run_id,
+                    alias="champion",
+                    name=MODEL_REG_NAME,
+                    extra_tags={**(extra or {}), "auc": auc},
+                    create_if_missing=True
+                )
 
-            # Register the champion model
-            register(model, roc_auc_score_value, run_id, alias="champion")
-
-        # End the MLflow run
+        # end run safety (no-op if ya cerramos con context manager)
         mlflow.end_run()
 
     @task
