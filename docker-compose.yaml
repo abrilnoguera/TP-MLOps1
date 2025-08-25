@@ -206,6 +206,9 @@ services:
       - MLFLOW_S3_ENDPOINT_URL=http://s3:9000
       - AWS_S3_ADDRESSING_STYLE=path        
       - AWS_EC2_METADATA_DISABLED=true 
+      - FEATURES_TRAIN_URI=s3://data/final/train/airbnb_X_train.csv
+      - FEATURES_TEST_URI=s3://data/final/test/airbnb_X_test.csv
+      - ID_COLUMN=listing_id
     command: >
       sh -lc '
         echo "Waiting for MLflow at $${MLFLOW_TRACKING_URI}";

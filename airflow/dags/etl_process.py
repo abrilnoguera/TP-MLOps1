@@ -341,6 +341,8 @@ def process_etl_airbnb_data():
         # Build X with listing_id as first column
         cols_for_X = (["listing_id"] if "listing_id" in dataset.columns else []) + feature_cols
         X = dataset[cols_for_X].copy()
+        X['lat'] = X['latitude']
+        X['lon'] = X['longitude']
 
         # y as a Series (not DataFrame) for stratify
         y = dataset[target_col].astype(int)
@@ -398,42 +400,57 @@ def process_etl_airbnb_data():
         y_train = wr.s3.read_csv("s3://data/final/train/airbnb_y_train.csv")
         X_test  = wr.s3.read_csv("s3://data/final/test/airbnb_X_test.csv")
 
-        # Save id before preprocessing
-        id_train = X_train["listing_id"] if "listing_id" in X_train.columns else None
-        id_test  = X_test["listing_id"] if "listing_id" in X_test.columns else None
+        # Keep id + raw coordinates in dataframes
+        have_id = "listing_id" in X_train.columns
+        have_lat = "lat" in X_train.columns
+        have_long = "lon" in X_train.columns 
 
-        # Drop id from feature set if present
-        if id_train is not None:
-            X_train = X_train.drop(columns=["listing_id"])
-            X_test  = X_test.drop(columns=["listing_id"])
+        if have_id and have_lat and have_long:
+            id_train = X_train[["listing_id", "lat", "lon"]].reset_index(drop=True)
+            id_test  = X_test[["listing_id", "lat", "lon"]].reset_index(drop=True)
+        else:
+            id_train = None
+            id_test = None
+
+        # Drop id + coords from the features used for training
+        drop_cols = []
+        if have_id:   drop_cols.append("listing_id")
+        if have_lat:  drop_cols.append("lat")
+        if have_long: drop_cols.append("long")
+
+        if drop_cols:
+            X_train = X_train.drop(columns=drop_cols, errors="ignore")
+            X_test  = X_test.drop(columns=drop_cols, errors="ignore")
 
         # === Preprocess ===
         variables = get_variables_from_yaml()
         cat_cols = variables["cat_cols"]
-        num_cols = [col for col in X_train.columns if col not in cat_cols]
+        num_cols = [c for c in X_train.columns if c not in cat_cols]
 
-        preprocessor = ColumnTransformer(transformers=[
-            ('num', StandardScaler(), num_cols),
-            ('cat', OneHotEncoder(drop='first', sparse_output=False, handle_unknown='ignore'), cat_cols)
-        ])
+        preprocessor = ColumnTransformer(
+            transformers=[
+                ("num", StandardScaler(), num_cols),
+                ("cat", OneHotEncoder(drop="first", sparse_output=False, handle_unknown="ignore"), cat_cols),
+            ]
+        )
 
         X_train_arr = preprocessor.fit_transform(X_train)
         X_test_arr  = preprocessor.transform(X_test)
 
         num_feature_names = num_cols
-        cat_feature_names = preprocessor.named_transformers_['cat'].get_feature_names_out(cat_cols)
+        cat_feature_names = preprocessor.named_transformers_["cat"].get_feature_names_out(cat_cols)
         all_feature_names = list(num_feature_names) + list(cat_feature_names)
 
         X_train_proc = pd.DataFrame(X_train_arr, columns=all_feature_names)
-        X_test_proc  = pd.DataFrame(X_test_arr, columns=all_feature_names)
+        X_test_proc  = pd.DataFrame(X_test_arr,  columns=all_feature_names)
 
-        # Re-attach listing_id if it exists
+        # Re-attach id + raw lat/lon as columnas separadas (al frente), sin tocarlas
         if id_train is not None:
-            X_train_proc.insert(0, "listing_id", id_train.values)
-            X_test_proc.insert(0, "listing_id", id_test.values)
+            X_train_proc = pd.concat([id_train, X_train_proc.reset_index(drop=True)], axis=1)
+            X_test_proc  = pd.concat([id_test,  X_test_proc.reset_index(drop=True)],  axis=1)
 
         # === Plots ===
-        plots = create_plots(X_train_proc.drop(columns=["listing_id"], errors="ignore"), y_train)
+        plots = create_plots(X_train_proc.drop(columns=["listing_id", "lat", "long"], errors="ignore"), y_train)
 
         # === Save transformed datasets ===
         save_to_csv(X_train_proc, "s3://data/final/train/airbnb_X_train.csv")

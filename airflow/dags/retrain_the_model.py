@@ -71,14 +71,14 @@ def processing_dag():
         def load_train_data():
             import awswrangler as wr, os
             wr.config.s3_endpoint_url = os.getenv("MLFLOW_S3_ENDPOINT_URL", "http://s3:9000")
-            X_train = wr.s3.read_csv("s3://data/final/train/airbnb_X_train.csv").drop(columns=["listing_id"])
+            X_train = wr.s3.read_csv("s3://data/final/train/airbnb_X_train.csv").drop(columns=["listing_id", "lat", "lon"])
             y_train = wr.s3.read_csv("s3://data/final/train/airbnb_y_train.csv")
             return X_train, y_train
 
         def load_test_data():
             import awswrangler as wr, os
             wr.config.s3_endpoint_url = os.getenv("MLFLOW_S3_ENDPOINT_URL", "http://s3:9000")
-            X_test = wr.s3.read_csv("s3://data/final/test/airbnb_X_test.csv").drop(columns=["listing_id"])
+            X_test = wr.s3.read_csv("s3://data/final/test/airbnb_X_test.csv").drop(columns=["listing_id", "lat", "lon"])
             y_test = wr.s3.read_csv("s3://data/final/test/airbnb_y_test.csv")
             return X_test, y_test
 

@@ -4,14 +4,25 @@ import requests
 import numpy as np
 import pandas as pd
 import mlflow
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 from pydantic import BaseModel, Field
 from typing import List, Dict, Any, Optional
+import time
+import awswrangler as wr
 
 # ---- ENV ----
 MLFLOW_TRACKING_URI = os.getenv("MLFLOW_TRACKING_URI", "http://mlflow:5000")
 MODEL_NAME = os.getenv("MODEL_NAME", "airbnb_model_prod")
 MODEL_ALIAS = os.getenv("MODEL_ALIAS", "champion")
+FEATURES_TRAIN_URI = os.getenv("FEATURES_TRAIN_URI", "s3://data/final/train/airbnb_X_train.csv")
+FEATURES_TEST_URI  = os.getenv("FEATURES_TEST_URI",  "s3://data/final/test/airbnb_X_test.csv")
+ID_COLUMN          = os.getenv("ID_COLUMN", "listing_id")
+WR_S3_ENDPOINT = os.getenv("MLFLOW_S3_ENDPOINT_URL", "http://s3:9000")
+_FEATURE_ID_CACHE: dict = {"ts": 0.0, "ids": []}
+_FEATURE_ID_TTL = int(os.getenv("FEATURE_IDS_TTL_SEC", "300"))  # 5 minutes
+
+# cache de dataset unido en memoria (opcional, simple)
+_features_df_cache: Optional[pd.DataFrame] = None
 
 # ---- GLOBAL STATE ----
 model = None
@@ -26,6 +37,104 @@ app = FastAPI(title="Airbnb Predictor", version="1.0.0")
 # -------------------------------
 # Helpers
 # -------------------------------
+
+def _load_features_union() -> pd.DataFrame:
+    """
+    Read train & test feature CSVs from MinIO (awswrangler) and return their union.
+    Keeps the ID column (ID_COLUMN). No target columns aquí.
+    """
+    import awswrangler as wr
+
+    wr.config.s3_endpoint_url = os.getenv("MLFLOW_S3_ENDPOINT_URL", "http://s3:9000")
+
+    df_train = wr.s3.read_csv(FEATURES_TRAIN_URI)
+    df_test  = wr.s3.read_csv(FEATURES_TEST_URI)
+
+    for df in (df_train, df_test):
+        if ID_COLUMN in df.columns:
+            try:
+                df[ID_COLUMN] = pd.to_numeric(df[ID_COLUMN], errors="ignore")
+            except Exception:
+                pass
+
+    df = pd.concat([df_train, df_test], axis=0, ignore_index=True)
+
+    if ID_COLUMN not in df.columns:
+        raise RuntimeError(f"ID column '{ID_COLUMN}' not found in features CSVs.")
+
+    return df
+
+def _get_features_for_ids(id_list: list) -> pd.DataFrame:
+    """
+    Return rows for the given IDs from the cached (or freshly loaded) features union.
+    """
+    global _features_df_cache
+    if _features_df_cache is None:
+        _features_df_cache = _load_features_union()
+
+    series = _features_df_cache[ID_COLUMN]
+    if pd.api.types.is_integer_dtype(series):
+        try:
+            id_list = [int(x) for x in id_list]
+        except Exception:
+            pass
+
+    sub = _features_df_cache[_features_df_cache[ID_COLUMN].isin(id_list)].copy()
+    return sub
+
+def _load_feature_ids() -> List[int]:
+    """
+    Read only the 'listing_id' column from train + test features in S3/MinIO,
+    concatenate, drop duplicates, and return as a python list[int].
+    """
+    wr.config.s3_endpoint_url = WR_S3_ENDPOINT
+
+    # Read ONLY the id column – faster and cheaper
+    cols = ["listing_id"]
+    dfs = []
+    for uri in (FEATURES_TRAIN_URI, FEATURES_TEST_URI):
+        try:
+            if uri.lower().endswith(".parquet"):
+                df = wr.s3.read_parquet(uri, columns=cols)
+            else:
+                df = wr.s3.read_csv(uri, usecols=cols)
+            dfs.append(df)
+        except Exception:
+            # If one side is missing, keep going with what we have
+            continue
+
+    if not dfs:
+        return []
+
+    all_ids = (
+        pd.concat(dfs, ignore_index=True)
+        .dropna(subset=["listing_id"])
+        .listing_id.astype("int64", errors="ignore")
+        .drop_duplicates()
+        .tolist()
+    )
+
+    # Normalize to regular python ints for JSON
+    return [int(x) for x in all_ids]
+
+def _get_ids_cached() -> List[int]:
+    """
+    Return cached ids if still fresh; otherwise reload and refresh the cache.
+    """
+    now = time.time()
+    if (now - _FEATURE_ID_CACHE["ts"]) < _FEATURE_ID_TTL and _FEATURE_ID_CACHE["ids"]:
+        return _FEATURE_ID_CACHE["ids"]
+
+    ids = _load_feature_ids()
+    _FEATURE_ID_CACHE["ids"] = ids
+    _FEATURE_ID_CACHE["ts"] = now
+    return ids
+
+from typing import Union
+
+class PredictById(BaseModel):
+    ids: List[Union[int, str]] = Field(..., description="Listing IDs to score")
+
 def _infer_expected_cols(loaded_model) -> Optional[list[str]]:
     """
     - If model has feature_names_in_, use that
@@ -67,105 +176,52 @@ def _prepare_features(df: pd.DataFrame, id_col: str = "listing_id") -> tuple[pd.
 
 def load_model() -> None:
     """
-    Robust loader:
-      - Resolve alias -> ModelVersion
-      - Try storage_location, then source, then runs:/<run_id>/model (if exists), then models:/NAME@ALIAS
-      - Prefer sklearn flavor; fallback to pyfunc
-      - Infer expected_cols
+    Load the model from the MLflow Model Registry:
+    - Resolve the alias (e.g., champion) in the Registry,
+    - Use mv.source (Registry path, not run path),
+    - Normalize path to end with /model,
+    - Try sklearn flavor first (lighter), fallback to pyfunc,
+    - Store expected feature columns if available,
+    - Keep API alive even if loading fails (model=None).
     """
-    import boto3
-    from urllib.parse import urlparse
-
     global model, model_version, expected_cols, model_uri_cached, last_error
 
     mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
 
-    client = mlflow.MlflowClient()
-
     try:
+        client = mlflow.MlflowClient()
+        # 1) Resolve alias in the Registry
         mv = client.get_model_version_by_alias(MODEL_NAME, MODEL_ALIAS)
+
+        # 2) Use the source returned by the Registry (models/m-.../artifacts[/model])
+        model_uri = mv.source.rstrip("/")
+        if not model_uri.endswith("/model"):
+            model_uri = model_uri + "/model"
+
+        # 3) Load the model
+        try:
+            loaded = mlflow.sklearn.load_model(model_uri)
+        except Exception:
+            loaded = mlflow.pyfunc.load_model(model_uri)
+
+        # 4) Update global state for /health and /status
+        model = loaded
         model_version = int(mv.version)
+        expected_cols = _infer_expected_cols(loaded)
+        model_uri_cached = model_uri
+        last_error = None
+        print(f"[Model] Loaded from Registry: {MODEL_NAME}@{MODEL_ALIAS} "
+              f"(v{model_version}) -> {model_uri}; expected_cols={'known' if expected_cols else 'unknown'}")
+
     except Exception as e:
+        # If anything fails, keep API alive but mark model unavailable
         model = None
         model_version = None
-        model_uri_cached = None
         expected_cols = None
-        last_error = f"alias resolve failed: {e}"
-        print(f"[Model] alias resolve failed: {e}")
-        return
+        model_uri_cached = None
+        last_error = str(e)
+        print(f"[Model] Registry load failed or artifacts unreachable: {e}")
 
-    # Helpers
-    def _try_load(uri: str):
-        try:
-            try:
-                m = mlflow.sklearn.load_model(uri)
-            except Exception:
-                m = mlflow.pyfunc.load_model(uri)
-            return m, None
-        except Exception as e:
-            return None, str(e)
-
-    def _s3_list(prefix: str):
-        """List keys in MinIO for debugging."""
-        try:
-            s3 = boto3.client(
-                "s3",
-                endpoint_url=os.getenv("MLFLOW_S3_ENDPOINT_URL", "http://s3:9000"),
-                aws_access_key_id=os.getenv("AWS_ACCESS_KEY_ID", "minio"),
-                aws_secret_access_key=os.getenv("AWS_SECRET_ACCESS_KEY", "minio123"),
-                config=boto3.session.Config(s3={'addressing_style': 'path'})
-            )
-            # Bucket is usually 'mlflow'; prefix like '1/<run_id>/artifacts/model/'
-            resp = s3.list_objects_v2(Bucket="mlflow", Prefix=prefix, MaxKeys=5)
-            return [c["Key"] for c in resp.get("Contents", [])]
-        except Exception as e:
-            return [f"(s3 list failed: {e})"]
-
-    # Candidate URIs to try
-    candidates: list[tuple[str, str]] = []
-
-    # 1) storage_location (if present)
-    storage_loc = getattr(mv, "storage_location", None)
-    if storage_loc:
-        candidates.append(("storage_location", storage_loc))
-
-    # 2) source
-    if mv.source:
-        candidates.append(("source", mv.source))
-
-    # 3) runs:/<run_id>/model  (only if the prefix actually has files)
-    run_prefix = f"1/{mv.run_id}/artifacts/model/"
-    keys = _s3_list(run_prefix)
-    if keys and not str(keys[0]).startswith("(s3 list failed"):
-        candidates.append(("runs_model", f"runs:/{mv.run_id}/model"))
-    else:
-        # dejar log del listado vacío para diagnóstico
-        print(f"[Model] S3 prefix empty for run: bucket=mlflow, prefix={run_prefix}, keys={keys}")
-
-    # 4) models:/NAME@ALIAS (fallback)
-    candidates.append(("models_alias", f"models:/{MODEL_NAME}@{MODEL_ALIAS}"))
-
-    last_errs: list[str] = []
-    for label, uri in candidates:
-        loaded, err = _try_load(uri)
-        if loaded is not None:
-            model = loaded
-            expected_cols = _infer_expected_cols(loaded)
-            model_uri_cached = uri
-            last_error = None
-            print(f"[Model] Loaded v{model_version} from {label}: {uri} "
-                  f"(expected_cols={'known' if expected_cols else 'unknown'})")
-            return
-        else:
-            last_errs.append(f"{label}: {err}")
-
-    # If we got here, all attempts failed
-    model = None
-    model_version = None
-    model_uri_cached = None
-    expected_cols = None
-    last_error = " | ".join(last_errs)
-    print(f"[Model] Registry load failed or artifacts unreachable: {last_error}")
 
 
 # ---------------------------------
@@ -240,3 +296,69 @@ def predict(payload: PredictRecords):
         raise HTTPException(status_code=400, detail=f"prediction failed: {e}")
 
     return {"count": len(out), "results": json.loads(out.to_json(orient="records"))}
+
+@app.post("/predict/by_id")
+def predict_by_id(payload: PredictById):
+    if model is None:
+        raise HTTPException(status_code=503, detail="No trained model available yet.")
+
+    ids_req = list(payload.ids)
+    feats = _get_features_for_ids(ids_req)
+
+    if feats.empty:
+        return {"count": 0, "missing_ids": ids_req, "results": []}
+
+    # Extraer coordenadas si existen
+    coords = {}
+    if "lat" in feats.columns and "lon" in feats.columns:
+        coords = feats[[ID_COLUMN, "lat", "lon"]].set_index(ID_COLUMN).to_dict("index")
+
+    X, ids = _prepare_features(feats, id_col=ID_COLUMN)
+
+    if hasattr(model, "predict_proba"):
+        proba = model.predict_proba(X)[:, 1]
+        pred = (proba >= 0.5).astype(int)
+        out = pd.DataFrame({
+            ID_COLUMN: ids,
+            "prediction": pred,
+            "score": proba
+        })
+    else:
+        pred = model.predict(X)
+        out = pd.DataFrame({ID_COLUMN: ids, "prediction": pred})
+
+    # Merge coords into results
+    results = []
+    for rec in out.to_dict(orient="records"):
+        lid = rec[ID_COLUMN]
+        if lid in coords:
+            rec["lat"] = coords[lid]["lat"]
+            rec["lon"] = coords[lid]["lon"]
+        rec["model_version"] = model_version
+        results.append(rec)
+
+    return {
+        "count": len(results),
+        "missing_ids": [i for i in ids_req if i not in out[ID_COLUMN].tolist()],
+        "results": results
+    }
+
+@app.get("/features/ids")
+def features_ids(
+    limit: int = Query(500, ge=1, le=10000, description="Maximum number of IDs to return"),
+    shuffle: bool = Query(True, description="Shuffle before truncating")
+):
+    """
+    Return available listing_ids from the preprocessed features (train + test).
+    - Reads only the 'listing_id' column from both sources.
+    - Dedupe + (optionally) shuffle + limit.
+    Example: GET /features/ids?limit=1000&shuffle=false
+    Response: {"ids": [11508, 12345, ...]}
+    """
+    ids = _get_ids_cached().copy()
+    if shuffle:
+        import random
+        random.shuffle(ids)
+    if limit:
+        ids = ids[:limit]
+    return {"ids": ids}
