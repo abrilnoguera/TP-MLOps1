@@ -268,6 +268,12 @@ if submitted:
         st.map(pd.DataFrame([DEFAULT_CENTER]), zoom=10)
 
     # =========================
+    # ----- Airbnb Link ----------
+    # =========================
+    listing_url = f"https://www.airbnb.com/rooms/{listing_id_out}"
+    st.link_button("View on Airbnb", listing_url)
+
+    # =========================
     # ----- RAW RESPONSE ------
     # =========================
     with st.expander("Raw API response", expanded=False):

@@ -200,44 +200,85 @@ def plot_feature_importance(
     """
     Draw a barplot with feature importance.
 
-    Parameters
-    ----------
-    model : trained sklearn estimator
-    feature_names : list[str] | pd.Index
-        Feature names in the same order expected by the model.
-    X, y : optional
-        Required if kind="permutation" or "auto" with no model attributes available.
-    kind : {"auto","model","coef","permutation"}
-        - "auto": tries model -> coef -> permutation (if X,y are given)
-        - "model": uses attribute `feature_importances_`
-        - "coef": uses `abs(coef_)` (flattens if multiclass)
-        - "permutation": uses permutation importance (requires X,y)
-    n_top : int
-        Number of top features to display.
-    normalize : bool
-        If True, normalizes importance values so that they sum to 1.
-    save_path : str | None
-        Path to save the PNG.
-    random_state : int
-        Random seed for permutation importance.
-
-    Returns
-    -------
-    fig : matplotlib.figure.Figure
-    importance_df : pd.DataFrame with columns ["feature","importance"]
+    Notes:
+    - Keeps X as a pandas DataFrame (when provided) to preserve feature names and avoid
+      the 'X does not have valid feature names' warning.
+    - When using permutation importance, temporarily forces n_jobs=1 on the estimator (and
+      any nested sklearn estimators in pipelines) to avoid loky warnings under multiprocessing.
     """
+    import numpy as np
+    import pandas as pd
+    import seaborn as sns
+    import matplotlib.pyplot as plt
+    from sklearn.utils.validation import check_is_fitted
+    from sklearn.inspection import permutation_importance
+
+    # --- small utilities -------------------------------------------------------
+    def _collect_feature_names(fn, X_):
+        """Return a concrete list of feature names aligned with X columns if available."""
+        if fn is not None:
+            return list(fn)
+        if hasattr(X_, "columns"):
+            return list(X_.columns)
+        # fallback to generic names
+        return [f"f{i}" for i in range(X_.shape[1])]
+
+    def _set_n_jobs_recursive(est, n_jobs_val, set_mode=True):
+        """
+        Recursively set (or collect) n_jobs on estimators inside pipelines.
+        Returns a dict of {obj_id: original_n_jobs} to allow restoration.
+        """
+        originals = {}
+        def _visit(e):
+            # Record and set on estimators that expose n_jobs
+            if hasattr(e, "n_jobs"):
+                originals[id(e)] = getattr(e, "n_jobs", None)
+                if set_mode:
+                    try:
+                        e.n_jobs = n_jobs_val
+                    except Exception:
+                        pass
+            # Pipelines / composites
+            if hasattr(e, "steps") and isinstance(getattr(e, "steps"), list):
+                for _, step in e.steps:
+                    _visit(step)
+            if hasattr(e, "named_steps") and isinstance(getattr(e, "named_steps"), dict):
+                for step in e.named_steps.values():
+                    _visit(step)
+            if hasattr(e, "estimators") and isinstance(getattr(e, "estimators"), list):
+                for step in e.estimators:
+                    _visit(step)
+        _visit(est)
+        return originals
+
+    def _restore_n_jobs(est, originals):
+        """Restore previously saved n_jobs values."""
+        def _visit(e):
+            if id(e) in originals:
+                try:
+                    setattr(e, "n_jobs", originals[id(e)])
+                except Exception:
+                    pass
+            if hasattr(e, "steps") and isinstance(getattr(e, "steps"), list):
+                for _, step in e.steps:
+                    _visit(step)
+            if hasattr(e, "named_steps") and isinstance(getattr(e, "named_steps"), dict):
+                for step in e.named_steps.values():
+                    _visit(step)
+            if hasattr(e, "estimators") and isinstance(getattr(e, "estimators"), list):
+                for step in e.estimators:
+                    _visit(step)
+        _visit(est)
+
+    # --------------------------------------------------------------------------
     # Ensure the model is fitted
-    try:
-        check_is_fitted(model)
-    except Exception:
-        raise ValueError("The model must be fitted before computing feature importance.")
+    check_is_fitted(model)
 
-    feature_names = list(feature_names)
+    # Normalize feature names list now
+    feature_names = list(feature_names) if feature_names is not None else None
 
-    # --- resolve kind ---
-    importance = None
+    # Decide strategy
     chosen = kind
-
     if kind == "auto":
         if hasattr(model, "feature_importances_"):
             chosen = "model"
@@ -246,6 +287,7 @@ def plot_feature_importance(
         else:
             chosen = "permutation"
 
+    # --- model-based importance ------------------------------------------------
     if chosen == "model":
         if not hasattr(model, "feature_importances_"):
             raise ValueError("The model has no attribute feature_importances_.")
@@ -255,44 +297,57 @@ def plot_feature_importance(
         if not hasattr(model, "coef_"):
             raise ValueError("The model has no attribute coef_.")
         coef = np.asarray(model.coef_, dtype=float)
-        if coef.ndim == 2:  # multi-class or binary with shape (1, n_features)
+        if coef.ndim == 2:
             coef = np.abs(coef).mean(axis=0)
         else:
             coef = np.abs(coef)
         importance = coef
 
+    # --- permutation importance ------------------------------------------------
     elif chosen == "permutation":
         if X is None or y is None:
             raise ValueError("Permutation importance requires both X and y.")
-        # Ensure DataFrame/ndarray consistency
-        if isinstance(X, pd.DataFrame):
-            X_used = X.values
-            if feature_names is None:
-                feature_names = list(X.columns)
-        else:
+
+        # Keep X as DataFrame when possible to preserve feature names
+        X_used = X  # no ".values" here
+        if not hasattr(X_used, "shape"):
+            # fallback to numpy array if truly not array-like
             X_used = np.asarray(X)
 
-        res = permutation_importance(
-            model, X_used, y, n_repeats=10, random_state=random_state, n_jobs=-1
-        )
-        importance = res.importances_mean
+        # Force estimator's internal parallelism to 1 during permutation to avoid loky warnings
+        originals = _set_n_jobs_recursive(model, 1, set_mode=True)
+        try:
+            res = permutation_importance(
+                model,
+                X_used,
+                np.asarray(y).ravel(),
+                n_repeats=10,
+                random_state=random_state,
+                n_jobs=1,   # also avoid external parallelism here
+            )
+            importance = res.importances_mean
+        finally:
+            _restore_n_jobs(model, originals)
 
     else:
-        raise ValueError(f"kind '{kind}' not recognized.")
+        raise ValueError(f"kind '{chosen}' not recognized.")
 
-    # --- build importance dataframe ---
-    if len(importance) != len(feature_names):
+    # --- build importance dataframe -------------------------------------------
+    # Resolve feature names definitively
+    fnames = _collect_feature_names(feature_names, X if X is not None else np.empty((len(importance), 1)))
+    if len(importance) != len(fnames):
         raise ValueError("Importance length does not match feature_names length.")
 
-    imp = pd.DataFrame({"feature": feature_names, "importance": importance})
+    import pandas as pd
+    imp = pd.DataFrame({"feature": fnames, "importance": importance})
     imp = imp.sort_values("importance", ascending=False).reset_index(drop=True)
-
     if normalize and imp["importance"].sum() > 0:
         imp["importance"] = imp["importance"] / imp["importance"].sum()
+    imp_top = imp.head(n_top).iloc[::-1]
 
-    imp_top = imp.head(n_top).iloc[::-1]  # invert for ascending barh
-
-    # --- style and plot ---
+    # --- plotting --------------------------------------------------------------
+    import seaborn as sns
+    import matplotlib.pyplot as plt
     sns.set_style("whitegrid", {"axes.facecolor": "#c2c4c2", "grid.linewidth": 1.5})
     cmap = sns.diverging_palette(10, 130, as_cmap=True)
     colors = [cmap(i / max(len(imp_top) - 1, 1)) for i in range(len(imp_top))]
