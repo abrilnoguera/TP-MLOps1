@@ -86,7 +86,7 @@ git clone https://github.com/abrilnoguera/TP-MLOps1.git
 
 ### 2. Moverse al directorio
 ```bash
-cd CEIA_TP_MLOps_1
+cd TP-MLOps1
 ```
 ### 3. Definir AIRFLOW_UID
 Si estás en Linux o MacOS, en el archivo .env, reemplaza AIRFLOW_UID por el de tu usuario o alguno que consideres oportuno (para encontrar el UID, usa el comando id -u <username>). De lo contrario, Airflow dejará sus carpetas internas como root y no podrás subir DAGs (en airflow/dags) o plugins, etc.
@@ -116,3 +116,13 @@ Para correr por primera vez, hay que activar el dag inicializador del workflow `
                                  La API no retorna prediccion, pero si un log que retorna un status code 503 y una indicacion: `Modelo no disponible. Aún no ha sido entrenado o registrado en MLflow, por favor espera a completar el ciclo de descarga-entrenamiento.`
 
 `Streamlit`: UI para prediccion: http://localhost:8501
+
+### 6. API de Predicción
+
+La **API de predicción** expone el modelo en producción para consumirlo desde aplicaciones externas o el frontend de Streamlit.  
+Una vez levantada, permite enviar solicitudes con las características de una propiedad y obtener la  prediccion
+📖 Para más detalles, ver la [documentación completa de la API](dockerfiles/fastapi/README.md).  
+
+Interfaces interactivas disponibles:  
+- **Swagger UI**: [http://localhost:8800/docs](http://localhost:8800/docs)  
+- **ReDoc**: [http://localhost:8800/redoc](http://localhost:8800/redoc)  
