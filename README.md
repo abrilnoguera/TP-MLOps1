@@ -110,9 +110,9 @@ docker compose down --rmi all --volumes
 `Airflow UI`: http://localhost:8080
 Para correr por primera vez, hay que activar el dag inicializador del workflow `etl_process` con eso se descargan los datos, preprocesan, entrenan y promueven a produccion el mejor modelo, una vez hecho esto, se pueden usar los servicios de FastApi y Streamlit.
 
-`MLflow UI`: http://localhost:5000
+`MLflow UI`: http://localhost:5001
 
-`FastAPI`: http://localhost:8000 - A tomar en cuenta, ya que al inicializar el proyecto, no hay datos descargados -> no existe artefacto de prediccion. Entonces
+`FastAPI`: http://localhost:8800 - A tomar en cuenta, ya que al inicializar el proyecto, no hay datos descargados -> no existe artefacto de prediccion. Entonces
                                  La API no retorna prediccion, pero si un log que retorna un status code 503 y una indicacion: `Modelo no disponible. Aún no ha sido entrenado o registrado en MLflow, por favor espera a completar el ciclo de descarga-entrenamiento.`
 
 `Streamlit`: UI para prediccion: http://localhost:8501
