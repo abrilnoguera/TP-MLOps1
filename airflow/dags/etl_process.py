@@ -34,9 +34,8 @@ default_args = {
     doc_md=markdown_text,
     tags=["ETL", "Airbnb"],
     default_args=default_args,
-    schedule_interval='0 2 * * *',
+    schedule='0 2 * * *',
     start_date=pendulum.datetime(2025, 8, 25, tz=BA),
-    timezone=BA,
     max_active_runs=1,
     catchup=False,
 )

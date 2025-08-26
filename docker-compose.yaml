@@ -26,6 +26,7 @@ x-airflow-common: &airflow-common
     - airflow
     - all
   environment: &airflow-common-env
+
     AIRFLOW__CORE__EXECUTOR: CeleryExecutor # LocalExecutor
     AIRFLOW__CORE__AUTH_MANAGER: airflow.providers.fab.auth_manager.fab_auth_manager.FabAuthManager
     AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${PG_USER:-airflow}:${PG_PASSWORD:-airflow}@postgres/${PG_DATABASE:-airflow}
@@ -47,6 +48,7 @@ x-airflow-common: &airflow-common
     MLFLOW_S3_ENDPOINT_URL: http://s3:9000
     AIRFLOW__CORE__DAG_PARSING_MODE: classic
     AIRFLOW__CORE__ENABLE_DAG_BUNDLES: "False"
+    AIRFLOW__CORE__DEFAULT_TIMEZONE: "America/Argentina/Buenos_Aires"
   volumes:
     - ${AIRFLOW_PROJ_DIR:-./airflow}/dags:/opt/airflow/dags
     - ${AIRFLOW_PROJ_DIR:-./airflow}/logs:/opt/airflow/logs
