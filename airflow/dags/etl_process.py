@@ -2,10 +2,11 @@ import datetime
 import pandas as pd
 import yaml
 import os
+import pendulum
 
 from airflow.decorators import dag, task
 from airflow.operators.trigger_dagrun import TriggerDagRunOperator 
-
+BA = pendulum.timezone("America/Argentina/Buenos_Aires")
 markdown_text = """
 ### ETL Process for AirBnb Dataset
 
@@ -21,19 +22,22 @@ testing. The split between the training and testing datasets is 70/30 and they a
 default_args = {
     'owner': "Abril Noguera - José Roberto Castro - Kevin Nelson Pennington - Pablo Ezequiel Brahim",
     'depends_on_past': False,
-    'schedule_interval': None,
     'retries': 1,
     'retry_delay': datetime.timedelta(minutes=5),
-    'dagrun_timeout': datetime.timedelta(minutes=15)
 }
 
 
 @dag(
     dag_id="process_etl_airbnb_data",
+    dagrun_timeout = datetime.timedelta(minutes=15),
     description="ETL process for Airbnb Buenos Aires, separating the dataset into training and testing sets.",
     doc_md=markdown_text,
     tags=["ETL", "Airbnb"],
     default_args=default_args,
+    schedule_interval='0 2 * * *',
+    start_date=pendulum.datetime(2025, 8, 25, tz=BA),
+    timezone=BA,
+    max_active_runs=1,
     catchup=False,
 )
 def process_etl_airbnb_data():
