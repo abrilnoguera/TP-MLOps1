@@ -354,6 +354,7 @@ def processing_dag():
         trigger_dag_id="make_predictions",
         wait_for_completion=False,
         reset_dag_run=True,
+        trigger_rule="none_failed_min_one_success",
         retries=0,
     )
 

@@ -504,9 +504,9 @@ def process_etl_airbnb_data():
         trigger_dag_id="retrain_the_model",
         wait_for_completion=False,
         reset_dag_run=True,
+        trigger_rule="none_failed_min_one_success",
         retries=0,
     )
-
     # Task dependencies
     raw >> preprocessed >> splitted >> encoded >> trigger_retrain
 
